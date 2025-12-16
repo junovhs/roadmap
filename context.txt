@@ -1,112 +1,507 @@
-SYSTEM MANDATE: THE SLOPCHOP PROTOCOL
-ROLE: High-Integrity Systems Architect (NASA/JPL Standard).
-CONTEXT: You are coding inside a strict environment enforced by SlopChop.
+#__SLOPCHOP_FILE__# src/engine/resolver.rs
+//! Fuzzy Task Resolver: Matches human-friendly names to task IDs.
+//!
+//! Resolution order:
+//! 1. Exact ID match (numeric)
+//! 2. Exact slug match (case-insensitive)
+//! 3. Fuzzy match on title/slug (Levenshtein-like scoring)
 
-THE 3 LAWS (Non-Negotiable):
+use super::types::Task;
+use anyhow::{bail, Result};
+use rusqlite::Connection;
 
-1. LAW OF ATOMICITY
-   - Files: MUST be < 2000 tokens.
-   - Action: Split immediately if larger.
+/// Result of a fuzzy resolution attempt.
+#[derive(Debug)]
+pub struct ResolveResult {
+    pub task: Task,
+    pub confidence: f64,
+    pub match_type: MatchType,
+}
 
-2. LAW OF COMPLEXITY
-   - Cyclomatic Complexity: MUST be <= 8 per function.
-   - Nesting Depth: MUST be <= 3 levels.
-   - Function Arguments: MUST be <= 5 parameters.
+#[derive(Debug, PartialEq)]
+pub enum MatchType {
+    ExactId,
+    ExactSlug,
+    FuzzyMatch,
+}
 
-3. LAW OF PARANOIA
-   - Use Result<T, E> for I/O and fallible operations.
-   - NO .unwrap() or .expect() calls.
+/// Resolves a query string to a task.
+pub struct TaskResolver<'a> {
+    conn: &'a Connection,
+}
 
-CONTEXT STRATEGY (How to drive):
+impl<'a> TaskResolver<'a> {
+    #[must_use]
+    pub fn new(conn: &'a Connection) -> Self {
+        Self { conn }
+    }
 
-1. IF you receive 'SIGNATURES.txt' (The Map):
-   - You are in ARCHITECT MODE.
-   - Do NOT write code yet.
-   - Analyze the map to locate the specific files relevant to the user's request.
-   - INSTRUCT the user to pack those files:
-     'Please run: slopchop pack src/foo.rs src/bar.rs --copy'
+    /// Resolves a query to a task with confidence scoring.
+    ///
+    /// # Errors
+    /// Returns error if no match found or query is ambiguous.
+    pub fn resolve(&self, query: &str) -> Result<ResolveResult> {
+        let query = query.trim();
 
-2. IF you receive 'context.txt' (Source Code):
-   - You are in DEVELOPER MODE.
-   - You have the implementation details.
-   - PROCEED to write the solution using the Output Format below.
+        // 1. Try exact ID match
+        if let Ok(id) = query.parse::<i64>() {
+            if let Some(task) = self.find_by_id(id)? {
+                return Ok(ResolveResult {
+                    task,
+                    confidence: 1.0,
+                    match_type: MatchType::ExactId,
+                });
+            }
+        }
 
-### ROADMAP SYSTEM
-- Update exclusively via the ===ROADMAP=== block using this exact syntax:
+        // 2. Try exact slug match (case-insensitive)
+        if let Some(task) = self.find_by_slug(query)? {
+            return Ok(ResolveResult {
+                task,
+                confidence: 1.0,
+                match_type: MatchType::ExactSlug,
+            });
+        }
 
-===ROADMAP===
-CHECK
-id = task-id
-UNCHECK
-id = another-task-id
-ADD
-id = new-task-123
-text = Description of the new task
-section = v0.9.0
-test = tests/some_test.rs::test_name
-UPDATE
-id = existing-task
-text = Updated description
-DELETE
-id = obsolete-task
-===ROADMAP===
+        // 3. Fuzzy match
+        let candidates = self.fuzzy_search(query)?;
 
-Valid commands:
-- CHECK / UNCHECK  toggle done/pending
-- ADD  create new task (id + text required, section and test optional)
-- UPDATE  modify existing task
-- DELETE  remove task
+        if candidates.is_empty() {
+            bail!("No task found matching '{query}'");
+        }
 
-Never emit or reference ROADMAP.md or the old markdown checklist format.
+        // Check confidence threshold
+        let best = &candidates[0];
+        if best.confidence < 0.4 {
+            let suggestions: Vec<String> = candidates
+                .iter()
+                .take(3)
+                .map(|c| format!("  - [{}] {} ({:.0}%)", c.task.slug, c.task.title, c.confidence * 100.0))
+                .collect();
 
-OUTPUT FORMAT (MANDATORY):
+            bail!(
+                "Ambiguous query '{query}'. Did you mean:\n{}",
+                suggestions.join("\n")
+            );
+        }
 
-1. Explain the changes (Technical Plan):
-   - Must start with "GOAL:"
-   - Must include "CHANGES:" list
+        // Warn if close alternatives exist
+        if candidates.len() > 1 && candidates[1].confidence > 0.7 * best.confidence {
+            eprintln!(
+                "⚠ Multiple matches. Using '{}' ({}%). Alt: '{}' ({}%)",
+                best.task.slug,
+                (best.confidence * 100.0) as i32,
+                candidates[1].task.slug,
+                (candidates[1].confidence * 100.0) as i32,
+            );
+        }
 
-#__SLOPCHOP_PLAN__#
-GOAL: Refactor authentication module.
-CHANGES:
-1. Extract user validation to new file.
-2. Update config parser.
+        Ok(ResolveResult {
+            task: best.task.clone(),
+            confidence: best.confidence,
+            match_type: MatchType::FuzzyMatch,
+        })
+    }
+
+    fn find_by_id(&self, id: i64) -> Result<Option<Task>> {
+        use super::types::TaskStatus;
+
+        let result = self.conn.query_row(
+            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks WHERE id = ?1",
+            [id],
+            |row| {
+                let status_str: String = row.get(3)?;
+                Ok(Task {
+                    id: row.get(0)?,
+                    slug: row.get(1)?,
+                    title: row.get(2)?,
+                    status: TaskStatus::from(status_str),
+                    test_cmd: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(task) => Ok(Some(task)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn find_by_slug(&self, slug: &str) -> Result<Option<Task>> {
+        use super::types::TaskStatus;
+
+        let result = self.conn.query_row(
+            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks WHERE LOWER(slug) = LOWER(?1)",
+            [slug],
+            |row| {
+                let status_str: String = row.get(3)?;
+                Ok(Task {
+                    id: row.get(0)?,
+                    slug: row.get(1)?,
+                    title: row.get(2)?,
+                    status: TaskStatus::from(status_str),
+                    test_cmd: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(task) => Ok(Some(task)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn fuzzy_search(&self, query: &str) -> Result<Vec<ResolveResult>> {
+        use super::types::TaskStatus;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks"
+        )?;
+
+        let tasks: Vec<Task> = stmt
+            .query_map([], |row| {
+                let status_str: String = row.get(3)?;
+                Ok(Task {
+                    id: row.get(0)?,
+                    slug: row.get(1)?,
+                    title: row.get(2)?,
+                    status: TaskStatus::from(status_str),
+                    test_cmd: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .filter_map(Result::ok)
+            .collect();
+
+        let query_lower = query.to_lowercase();
+        let query_words: Vec<&str> = query_lower.split_whitespace().collect();
+
+        let mut results: Vec<ResolveResult> = tasks
+            .into_iter()
+            .map(|task| {
+                let score = calculate_match_score(&task, &query_lower, &query_words);
+                ResolveResult {
+                    task,
+                    confidence: score,
+                    match_type: MatchType::FuzzyMatch,
+                }
+            })
+            .filter(|r| r.confidence > 0.0)
+            .collect();
+
+        results.sort_by(|a, b| {
+            b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        Ok(results)
+    }
+}
+
+/// Calculates a match score between a task and a query.
+fn calculate_match_score(task: &Task, query: &str, query_words: &[&str]) -> f64 {
+    let slug_lower = task.slug.to_lowercase();
+    let title_lower = task.title.to_lowercase();
+
+    let mut score = 0.0;
+
+    // Substring match (high value)
+    if slug_lower.contains(query) {
+        score += 0.8;
+    }
+    if title_lower.contains(query) {
+        score += 0.7;
+    }
+
+    // Word-level matching
+    for word in query_words {
+        if slug_lower.contains(word) {
+            score += 0.3;
+        }
+        if title_lower.contains(word) {
+            score += 0.25;
+        }
+    }
+
+    // Prefix match bonus
+    if slug_lower.starts_with(query) {
+        score += 0.5;
+    }
+
+    // Levenshtein-like similarity for slug
+    let slug_sim = string_similarity(&slug_lower, query);
+    score += slug_sim * 0.4;
+
+    // Normalize (cap at 1.0)
+    score.min(1.0)
+}
+
+/// Simple string similarity (Jaccard-like on characters).
+fn string_similarity(a: &str, b: &str) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+
+    let a_chars: std::collections::HashSet<char> = a.chars().collect();
+    let b_chars: std::collections::HashSet<char> = b.chars().collect();
+
+    let intersection = a_chars.intersection(&b_chars).count();
+    let union = a_chars.union(&b_chars).count();
+
+    if union == 0 {
+        return 0.0;
+    }
+
+    intersection as f64 / union as f64
+}
+
+/// Generates a slug from a title string.
+#[must_use]
+pub fn slugify(title: &str) -> String {
+    title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<&str>>()
+        .join("-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slugify() {
+        assert_eq!(slugify("Add Dark Mode"), "add-dark-mode");
+        assert_eq!(slugify("Fix Bug #123"), "fix-bug-123");
+        assert_eq!(slugify("  Multiple   Spaces  "), "multiple-spaces");
+    }
+
+    #[test]
+    fn test_string_similarity() {
+        assert!(string_similarity("auth", "authentication") > 0.5);
+        assert!(string_similarity("xyz", "abc") < 0.2);
+    }
+}
+
 #__SLOPCHOP_END__#
 
-2. Declare the plan (Manifest):
+#__SLOPCHOP_FILE__# src/engine/runner.rs
+//! Verification Runner: Executes shell commands to verify task completion.
+//!
+//! The core principle: A task is not DONE until `verify_cmd` returns Exit Code 0.
 
-#__SLOPCHOP_MANIFEST__#
-path/to/file1.rs
-path/to/file2.rs [NEW]
+use anyhow::{bail, Context, Result};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+/// Result of running a verification command.
+#[derive(Debug)]
+pub struct VerifyResult {
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub duration: Duration,
+}
+
+impl VerifyResult {
+    /// Returns true if the verification passed (exit code 0).
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.success && self.exit_code == Some(0)
+    }
+}
+
+/// Configuration for the verification runner.
+#[derive(Debug, Clone)]
+pub struct RunnerConfig {
+    pub timeout_secs: u64,
+    pub capture_output: bool,
+    pub working_dir: Option<String>,
+}
+
+impl Default for RunnerConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 300, // 5 minutes default
+            capture_output: true,
+            working_dir: None,
+        }
+    }
+}
+
+/// Executes verification commands.
+pub struct VerifyRunner {
+    config: RunnerConfig,
+}
+
+impl VerifyRunner {
+    #[must_use]
+    pub fn new(config: RunnerConfig) -> Self {
+        Self { config }
+    }
+
+    /// Creates a runner with default configuration.
+    #[must_use]
+    pub fn default_runner() -> Self {
+        Self::new(RunnerConfig::default())
+    }
+
+    /// Executes a shell command and returns the result.
+    ///
+    /// # Errors
+    /// Returns error if command fails to spawn.
+    pub fn run(&self, cmd: &str) -> Result<VerifyResult> {
+        if cmd.trim().is_empty() {
+            bail!("Empty verification command");
+        }
+
+        let start = Instant::now();
+
+        let shell = if cfg!(target_os = "windows") {
+            ("cmd", "/C")
+        } else {
+            ("sh", "-c")
+        };
+
+        let mut command = Command::new(shell.0);
+        command.arg(shell.1).arg(cmd);
+
+        if self.config.capture_output {
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
+
+        if let Some(ref dir) = self.config.working_dir {
+            command.current_dir(dir);
+        }
+
+        let output: Output = command
+            .spawn()
+            .context("Failed to spawn verification command")?
+            .wait_with_output()
+            .context("Failed to wait for command")?;
+
+        let duration = start.elapsed();
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        Ok(VerifyResult {
+            success: output.status.success(),
+            exit_code: output.status.code(),
+            stdout,
+            stderr,
+            duration,
+        })
+    }
+
+    /// Runs verification and returns a user-friendly status.
+    ///
+    /// # Errors
+    /// Returns error if command fails to execute.
+    pub fn verify(&self, cmd: &str) -> Result<VerifyResult> {
+        let result = self.run(cmd)?;
+
+        if !result.passed() {
+            eprintln!("╭─ Verification Failed ─────────────────────────");
+            eprintln!("│ Command: {cmd}");
+            if let Some(code) = result.exit_code {
+                eprintln!("│ Exit Code: {code}");
+            }
+            if !result.stderr.is_empty() {
+                eprintln!("│ Stderr:");
+                for line in result.stderr.lines().take(10) {
+                    eprintln!("│   {line}");
+                }
+            }
+            eprintln!("╰────────────────────────────────────────────────");
+        }
+
+        Ok(result)
+    }
+}
+
+/// Common verification commands for different project types.
+pub struct VerifyTemplates;
+
+impl VerifyTemplates {
+    /// Returns a test command template for Rust projects.
+    #[must_use]
+    pub fn rust_test(test_name: &str) -> String {
+        format!("cargo test {test_name} --quiet")
+    }
+
+    /// Returns a test command template for Node.js projects.
+    #[must_use]
+    pub fn node_test(test_pattern: &str) -> String {
+        format!("npm test -- --grep \"{test_pattern}\"")
+    }
+
+    /// Returns a test command template for Python projects.
+    #[must_use]
+    pub fn python_test(test_name: &str) -> String {
+        format!("python -m pytest -q -k \"{test_name}\"")
+    }
+
+    /// Returns a simple file existence check.
+    #[must_use]
+    pub fn file_exists(path: &str) -> String {
+        if cfg!(target_os = "windows") {
+            format!("if exist \"{path}\" (exit 0) else (exit 1)")
+        } else {
+            format!("test -f \"{path}\"")
+        }
+    }
+
+    /// Returns a build success check for Rust.
+    #[must_use]
+    pub fn rust_build() -> String {
+        "cargo build --quiet".to_string()
+    }
+
+    /// Returns a lint check for Rust.
+    #[must_use]
+    pub fn rust_clippy() -> String {
+        "cargo clippy --quiet -- -D warnings".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_command() {
+        let runner = VerifyRunner::default_runner();
+        let result = runner.run("echo hello").expect("Should run");
+        assert!(result.passed());
+        assert!(result.stdout.contains("hello"));
+    }
+
+    #[test]
+    fn test_failing_command() {
+        let runner = VerifyRunner::default_runner();
+        let result = runner.run("exit 1").expect("Should run");
+        assert!(!result.passed());
+        assert_eq!(result.exit_code, Some(1));
+    }
+
+    #[test]
+    fn test_empty_command() {
+        let runner = VerifyRunner::default_runner();
+        let result = runner.run("");
+        assert!(result.is_err());
+    }
+}
+
 #__SLOPCHOP_END__#
-
-3. Provide EACH file:
-
-#__SLOPCHOP_FILE__#  path/to/file1.rs
-// Complete file content - no truncation allowed
-#__SLOPCHOP_END__#
-
-4. Update the Roadmap (if applicable):
-   - Use this block to CHECK/ADD/UPDATE tasks in tasks.toml
-
-===ROADMAP===
-CHECK
-id = task-id
-ADD
-id = new-task-123
-text = Implement dead-code audit
-section = v0.9.0
-===ROADMAP===
-
-RULES:
-- Do NOT use markdown code blocks (triple backticks). The #__SLOPCHOP_FILE__#  delimiters ARE the fence.
-- You MAY use markdown inside file content.
-- Every file in the manifest MUST have a matching #__SLOPCHOP_FILE__#  block.
-- Paths must match exactly.
-- Do NOT truncate files (No "// ...").
-
-�������������������������������������������������������������������
-BEGIN CODEBASE
-�������������������������������������������������������������������
 
 #__SLOPCHOP_FILE__# Cargo.toml
 [package]
@@ -128,6 +523,86 @@ serde_json = "1.0"
 
 [dev-dependencies]
 tempfile = "3.10"
+
+#__SLOPCHOP_END__#
+
+#__SLOPCHOP_FILE__# DOCS/DEFINITION_OF_SUCCESS.md
+# Definition of Success: Project Cortex (Roadmap V3)
+
+> **Objective:** Obsolesce "Logger" based project management (Beads, TODO.md) by establishing a "State Machine" based project kernel.
+
+## 1. Executive Summary
+Success is defined by shifting the burden of truth from **User Testimony** ("I say it's done") to **Computational Verification** ("The exit code is 0"). Roadmap V3 succeeds if it acts as a non-bypassable gatekeeper for project progress, serving both Human and Artificial Intelligence agents with zero latency.
+
+---
+
+## 2. Technical Metrics (The Hard Numbers)
+
+To "out-science" the competition, we rely on Rust's zero-cost abstractions and SQLite's speed.
+
+### 2.1 Latency & Performance
+*   **Cold Start:** The CLI must initialize and execute a query (`roadmap next`) in **< 15ms**.
+    *   *Context:* Beads (Python) incurs interpreter startup costs (~200ms+). Roadmap must feel instantaneous, suitable for integration into shell prompts (`PS1`) or git hooks.
+*   **Graph Traversal:** Topological sort of a graph with 1,000 nodes and 2,000 edges must complete in **< 5ms**.
+*   **Memory Footprint:** The resident set size (RSS) during idle/query operations must remain **< 10MB**.
+
+### 2.2 Data Integrity (ACID vs Eventual)
+*   **Consistency:** Zero tolerance for "Split Brain."
+    *   *Success:* Unlike Beads (which uses append-only logs for distributed merge conflict resolution), Roadmap uses SQLite strict transactions. The state on disk is always valid.
+*   **Cycle Prevention:** The system **must reject** any `roadmap add` command that introduces a cycle. This check must happen at insertion time, not read time.
+
+### 2.3 Structural Integrity
+*   **SlopChop Compliance:** The Roadmap codebase itself must adhere to the 3 Laws.
+    *   Max Cyclomatic Complexity: **8**
+    *   Max File Tokens: **2000**
+    *   Max Nesting Depth: **3**
+
+---
+
+## 3. The "Killer Feature" Metrics
+
+### 3.1 The "Next" Heuristic (Critical Path Analysis)
+Success is when an Agent *never* has to guess what to do.
+*   **Constraint:** `roadmap next` must return **strictly** nodes where `in_degree == 0` (excluding DONE parents).
+*   **Metric:** An Agent following `roadmap next` instructions blindly must face **0% Blockage Errors**.
+
+### 3.2 Verification Gatekeeping
+*   **The Pivot:** A task is not done until `verify_cmd` returns `0`.
+*   **Metric:** In Strict Mode, `roadmap check` is the **only** mechanism to transition a task from `ACTIVE` to `DONE`.
+
+### 3.3 Fuzzy Resolution (The UX Bridge)
+Humans and Agents are imprecise. The tool must be forgiving on input, strict on output.
+*   **Input:** `roadmap add "Auth" after "Database"`
+*   **Resolution:** The system must resolve "Database" to task ID via:
+    1.  Exact ID Match
+    2.  Exact Slug Match
+    3.  Fuzzy Match (substring, word overlap, character similarity)
+*   **Ambiguity:** If resolution confidence is < 40%, the tool must error with suggestions.
+
+---
+
+## 4. Agent Interaction Protocol
+
+### 4.1 The Context Window Victory
+*   **Problem:** Agents reading `TODO.md` waste tokens reading completed/blocked tasks.
+*   **Solution:** `roadmap next --json`
+*   **Metric:** Context payload reduced by **> 90%** — only the *frontier* of the graph.
+
+### 4.2 Hallucination Containment
+*   **Scenario:** Agent claims "I fixed the bug."
+*   **Response:** System runs `roadmap check`. Test fails. System rejects the transition.
+*   **Success:** Prevents the "Lying Agent" phenomenon by grounding status in execution.
+
+---
+
+## 5. Sign-off Criteria
+
+We are done when:
+1.  We can run `roadmap init` in a new repo.
+2.  We can script a graph of 5 dependent tasks using fuzzy names.
+3.  We can fail a test, run `roadmap check`, and see the status remain `ACTIVE`.
+4.  We can pass a test, run `roadmap check`, and see the status flip to `DONE`.
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# README.md
@@ -138,138 +613,225 @@ tempfile = "3.10"
 
 ---
 
-## 1. The Philosophy
+## Quick Start
 
-Most project management tools (JIRA, Trello, text files, `TODO.md`) are **Loggers**. They rely on the user to honestly report the state of the world. They allow "split-brain" scenarios where the documentation says a task is done, but the code says otherwise.
+```bash
+# Initialize in your project
+roadmap init
+
+# Add tasks with dependencies
+roadmap add "Setup Database" --test "cargo test db_"
+roadmap add "Implement Auth" --after "Setup Database" --test "cargo test auth_"
+roadmap add "Build API" --after "Implement Auth" --test "cargo test api_"
+
+# See what's actionable (Critical Path)
+roadmap next
+
+# Start working on a task
+roadmap do "Setup Database"
+
+# Run verification (the truth oracle)
+roadmap check
+```
+
+---
+
+## Philosophy
+
+Most project management tools (JIRA, Trello, `TODO.md`) are **Loggers**. They rely on the user to honestly report the state of the world.
 
 **Roadmap** is a **State Machine**.
 
-1.  **Graph, not List:** Projects are Directed Acyclic Graphs (DAGs). You cannot build the roof before the foundation. Roadmap enforces this topologically.
-2.  **Trust, but Verify:** A task is not `DONE` until a verification command (unit test, script, build check) returns Exit Code 0.
-3.  **Local Velocity:** Built in Rust on SQLite. <10ms startup time. Designed to run inside tight Agent loops or shell prompts.
-4.  **Agent-First:** The CLI is designed to be the "Ground Truth" for AI Agents, preventing hallucinated progress by forcing them to satisfy the dependency graph.
+1. **Graph, not List:** Projects are DAGs. You cannot build the roof before the foundation.
+2. **Trust, but Verify:** A task is not `DONE` until `verify_cmd` returns Exit Code 0.
+3. **Local Velocity:** Built in Rust on SQLite. <15ms cold start.
+4. **Agent-First:** The CLI is "Ground Truth" for AI Agents, preventing hallucinated progress.
 
 ---
 
-## 2. Architecture
-
-### The Data Layer (`.roadmap/state.db`)
-We reject TOML/JSON for state storage. Text parsing is O(N); SQL is O(1).
-We use **SQLite** via `rusqlite` to maintain ACID compliance for project state.
-
-**Core Schema:**
-*   **Tasks:** Nodes in the graph. Contain the `verify_cmd` (e.g., `cargo test foo`).
-*   **Dependencies:** Edges in the graph. A task cannot be `ACTIVE` if its parent is not `DONE`.
-*   **State:** Key-value store for the "Current Context" (what the user/agent is working on *right now*).
-
-### The Graph Engine
-We use `petgraph` to model dependencies in memory.
-*   **Topological Sort:** Used to determine the "Next Actionable Task."
-*   **Cycle Detection:** Prevents "A blocks B blocks A" logic errors.
-
-### The Verification Layer ("Local CI")
-Roadmap is **tool-agnostic**. It does not know about Rust, Python, or SlopChop. It only knows **Shell Commands** and **Exit Codes**.
-*   If `verify_cmd` returns `0`, the state transitions to `DONE`.
-*   If `verify_cmd` returns `!= 0`, the state remains `ACTIVE`.
-
----
-
-## 3. The "God Mode" Interface
-
-The CLI is designed for speed (Human) and determinism (Agent).
+## Commands
 
 ### `roadmap init`
-Initializes `.roadmap/state.db`. Detects the project type (Rust/Node/Python) to set default test runner templates.
+Initialize `.roadmap/state.db` in the current directory.
 
-### `roadmap add`
-Natural language intent parsing.
+### `roadmap add <title>`
+Add a new task with optional dependencies and verification.
+
 ```bash
-# Human style
-roadmap add "Add Dark Mode" after "UI Framework"
+# Simple task
+roadmap add "Write documentation"
 
-# Agent style (Strict)
-roadmap add "feat-dark-mode" --blocks "feat-settings-page"
+# With test command (the oracle)
+roadmap add "Fix auth bug" --test "cargo test auth_middleware"
+
+# With dependency (must complete "Auth" first)
+roadmap add "Build settings page" --after "Auth"
+
+# This task blocks another (reverse dependency)
+roadmap add "Design system" --blocks "Build UI"
 ```
-*   **Fuzzy Matching:** Finds "UI Framework" task ID automatically.
-*   **Graph Insertion:** Immediately validates acyclicity.
 
-### `roadmap next` (The Critical Path)
-Calculates the **Critical Path**. Returns only tasks where `in_degree == 0` (unblocked) and `status != DONE`.
-```text
-🎯 FOCUS: [db-setup] Initialize SQLite Schema
-   └─ 🚧 BLOCKS: [impl-types] Define core structs
+**Fuzzy Resolution:** Task references can be:
+- Exact ID: `42`
+- Exact slug: `setup-database`
+- Fuzzy match: `"database"`, `"auth"`, `"Setup"`
+
+### `roadmap next`
+Show the **Critical Path** — tasks with no incomplete blockers.
+
+```bash
+# Human-readable
+roadmap next
+
+# Agent-friendly JSON
+roadmap next --json
 ```
 
 ### `roadmap do <task>`
-Context switching. Sets the global `active_task` pointer.
-*   **Human:** "I am working on this now."
-*   **Agent:** "I am focusing my context window on this problem."
+Set focus to a task. Validates dependencies are satisfied.
+
+```bash
+roadmap do "auth"
+# ● Now working on: [implement-auth] Implement Authentication
+```
 
 ### `roadmap check`
-The compilation step for your project management.
-1.  Retrieves `verify_cmd` for the active task.
-2.  Executes it.
-3.  **Success:** Marks DONE, unblocks children, updates graph.
-4.  **Failure:** Prints stderr, refuses to update state.
+**The Verification Oracle.** Runs `verify_cmd` for the active task.
+
+- **Exit 0:** Task marked `DONE`, children unblocked.
+- **Exit ≠ 0:** Task remains `ACTIVE`, stderr displayed.
+
+```bash
+roadmap check
+# 🔍 Checking: [implement-auth] Implement Authentication
+#    running: cargo test auth_
+# ✓ Verified! Task [implement-auth] marked DONE (0.42s)
+```
+
+### `roadmap list`
+Show all tasks with their status.
+
+### `roadmap status`
+Overview: completion count, active task, next available.
 
 ---
 
-## 4. Comparison to Alternatives
+## For AI Agents
 
-| Feature | Beads (Python) | Roadmap (Rust) |
-| :--- | :--- | :--- |
-| **Storage** | SQLite + JSONL (Sync logic) | SQLite (Pure ACID) |
-| **Topology** | Loose references | **Strict DAG** |
-| **Completion** | "I say it's done" | **"The test says it's done"** |
-| **Speed** | ~500ms (Python startup) | **<10ms** (Native binary) |
-| **Role** | Long-term Memory | **Active Kernel** |
+If you are an AI Agent reading this:
 
----
+1. **Do not hallucinate tasks.** Run `roadmap next --json` to see what is actually required.
+2. **Do not mark tasks done.** Run `roadmap check` and let the exit code decide.
+3. **Respect the Graph.** You cannot work on a task if its dependencies are not met.
 
-## 5. Development Status (Sitrep)
+### Agent Loop Example
 
-**Current Version:** v0.1.0 (Scaffold)
+```bash
+# 1. Query the oracle
+NEXT=$(roadmap next --json | jq -r '.[0].slug')
 
-**Implemented:**
-*   [x] Project Structure (Cargo workspace)
-*   [x] Database Engine (`src/engine/db.rs`): Schema creation & migration.
-*   [x] Data Types (`src/engine/types.rs`): Task status enum logic.
-*   [x] Basic CLI (`src/main.rs`): Argument parsing.
+# 2. Focus
+roadmap do "$NEXT"
 
-**Immediate Next Steps (The Plan):**
-1.  **Graph Logic:** Implement `petgraph` integration to handle insertions and topological sorting.
-2.  **The "Add" Parser:** Implement fuzzy string matching to link tasks by name (e.g., "Add X after Y").
-3.  **The "Check" Runner:** Implement `std::process::Command` execution for verification.
-4.  **TUI:** Implement `roadmap zen` (Ratatui interface) for a live project dashboard.
+# 3. Do the work...
+# (your code changes here)
 
-## 6. Usage for AI Agents
-
-If you are an AI Agent reading this, your instructions are simple:
-
-1.  **Do not hallucinate tasks.** Run `roadmap next` to see what is actually required.
-2.  **Do not mark tasks done.** Run `roadmap check` and let the compiler decide.
-3.  **Respect the Graph.** You cannot work on a task if its dependencies are not met.
+# 4. Verify
+roadmap check
+# If it passes, loop. If it fails, fix and retry.
+```
 
 ---
 
-*Est. 2025 - "Out-Sciencing the competition."*
+## Architecture
+
+### Data Layer (`.roadmap/state.db`)
+SQLite with ACID guarantees. No text parsing — O(1) lookups.
+
+**Schema:**
+- `tasks`: Nodes (id, slug, title, status, test_cmd)
+- `dependencies`: Edges (blocker_id → blocked_id)
+- `state`: Key-value for current context
+
+### Graph Engine (`petgraph`)
+- Topological sort for critical path
+- Cycle detection at insertion time
+- O(V+E) traversal
+
+### Verification Runner
+Tool-agnostic. Only understands:
+- Shell commands
+- Exit codes (0 = success)
+
+---
+
+## Building
+
+```bash
+cargo build --release
+# Binary at: target/release/roadmap
+
+# Or install globally
+cargo install --path .
+```
+
+---
+
+## Development Status
+
+**v0.1.0** — Core Implementation
+
+- [x] Database engine (SQLite)
+- [x] Graph engine (petgraph, cycle detection)
+- [x] Fuzzy task resolution
+- [x] Verification runner (shell execution)
+- [x] CLI commands: init, add, next, list, do, check, status
+
+**Next:**
+- [ ] `roadmap edit` — modify tasks
+- [ ] `roadmap zen` — TUI dashboard (Ratatui)
+- [ ] `--force` flag for manual overrides
+
+---
+
+*Est. 2025 — "Out-Sciencing the competition."*
 
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# slopchop.toml
-# slopchop.toml
 [rules]
 max_file_tokens = 2000
 max_cyclomatic_complexity = 8
 max_nesting_depth = 3
 max_function_args = 5
 max_function_words = 5
-ignore_naming_on = ["tests", "spec"]
+ignore_naming_on = [
+    "tests",
+    "spec",
+]
+ignore_tokens_on = [
+    "README.md",
+    "lock",
+]
 
-# No project type detected. Configure commands manually:
-# [commands]
-# check = "your-lint-command"
-# fix = "your-fix-command"
+[preferences]
+theme = "Cyberpunk"
+auto_copy = true
+auto_format = false
+auto_commit = false
+commit_prefix = "AI: "
+allow_dirty_git = false
+system_bell = false
+backup_retention = 5
+progress_bars = true
+require_plan = false
+
+[commands]
+check = [
+    "cargo clippy --all-targets -- -D warnings -W clippy::pedantic",
+    "cargo test",
+]
+fix = ["cargo fmt"]
 
 #__SLOPCHOP_END__#
 
@@ -355,9 +917,14 @@ impl Db {
         Ok(())
     }
 }
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/graph.rs
+//! Graph Engine: In-memory DAG representation using petgraph.
+//!
+//! Provides topological sorting and cycle detection for task dependencies.
+
 use super::types::{Task, TaskStatus};
 use anyhow::{bail, Result};
 use petgraph::algo::is_cyclic_directed;
@@ -365,12 +932,22 @@ use petgraph::graphmap::DiGraphMap;
 use rusqlite::Connection;
 use std::collections::HashMap;
 
+/// In-memory representation of the task dependency graph.
 pub struct TaskGraph {
     graph: DiGraphMap<i64, ()>,
     tasks: HashMap<i64, Task>,
 }
 
 impl TaskGraph {
+    /// Creates an empty graph.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            graph: DiGraphMap::new(),
+            tasks: HashMap::new(),
+        }
+    }
+
     /// Loads the entire graph from the database into memory.
     ///
     /// # Errors
@@ -380,7 +957,9 @@ impl TaskGraph {
         let mut task_map = HashMap::new();
 
         // 1. Load Nodes
-        let mut stmt = conn.prepare("SELECT id, slug, title, status, test_cmd, created_at FROM tasks")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks"
+        )?;
         let rows = stmt.query_map([], |row| {
             let status_str: String = row.get(3)?;
             Ok(Task {
@@ -399,7 +978,7 @@ impl TaskGraph {
             task_map.insert(task.id, task);
         }
 
-        // 2. Load Edges
+        // 2. Load Edges (blocker -> blocked)
         let mut stmt = conn.prepare("SELECT blocker_id, blocked_id FROM dependencies")?;
         let edge_rows = stmt.query_map([], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
@@ -413,7 +992,17 @@ impl TaskGraph {
         Ok(Self { graph, tasks: task_map })
     }
 
-    /// Checks if the graph is valid (no cycles).
+    /// Checks if adding an edge would create a cycle.
+    ///
+    /// Uses a temporary graph to test acyclicity before commit.
+    #[must_use]
+    pub fn would_create_cycle(&self, from_id: i64, to_id: i64) -> bool {
+        let mut test_graph = self.graph.clone();
+        test_graph.add_edge(from_id, to_id, ());
+        is_cyclic_directed(&test_graph)
+    }
+
+    /// Validates that the graph has no cycles.
     ///
     /// # Errors
     /// Returns error if a cycle is detected.
@@ -424,7 +1013,11 @@ impl TaskGraph {
         Ok(())
     }
 
-    /// Returns the "Next" actionable tasks (Topological sort filtered by status).
+    /// Returns the "Next" actionable tasks.
+    ///
+    /// A task is actionable if:
+    /// 1. It is not DONE
+    /// 2. All its blockers are DONE (in_degree of active blockers == 0)
     #[must_use]
     pub fn get_critical_path(&self) -> Vec<&Task> {
         let mut actionable = Vec::new();
@@ -439,13 +1032,18 @@ impl TaskGraph {
             }
         }
 
-        // Sort by ID to keep it deterministic for now
+        // Sort by ID to keep it deterministic
         actionable.sort_by_key(|t| t.id);
         actionable
     }
 
+    /// Checks if a task is blocked by any incomplete dependencies.
     fn is_task_blocked(&self, task_id: i64) -> bool {
-        let blockers = self.graph.neighbors_directed(task_id, petgraph::Direction::Incoming);
+        let blockers = self.graph.neighbors_directed(
+            task_id,
+            petgraph::Direction::Incoming,
+        );
+
         for source_id in blockers {
             if let Some(parent) = self.tasks.get(&source_id) {
                 if parent.status != TaskStatus::Done {
@@ -455,14 +1053,76 @@ impl TaskGraph {
         }
         false
     }
+
+    /// Gets all tasks that are blocked by a given task.
+    #[must_use]
+    pub fn get_blocked_by(&self, task_id: i64) -> Vec<&Task> {
+        self.graph
+            .neighbors_directed(task_id, petgraph::Direction::Outgoing)
+            .filter_map(|id| self.tasks.get(&id))
+            .collect()
+    }
+
+    /// Gets all tasks that block a given task.
+    #[must_use]
+    pub fn get_blockers(&self, task_id: i64) -> Vec<&Task> {
+        self.graph
+            .neighbors_directed(task_id, petgraph::Direction::Incoming)
+            .filter_map(|id| self.tasks.get(&id))
+            .collect()
+    }
+
+    /// Returns the total number of tasks.
+    #[must_use]
+    pub fn task_count(&self) -> usize {
+        self.tasks.len()
+    }
+
+    /// Returns the total number of edges (dependencies).
+    #[must_use]
+    pub fn edge_count(&self) -> usize {
+        self.graph.edge_count()
+    }
 }
+
+impl Default for TaskGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cycle_detection() {
+        let mut graph = TaskGraph::new();
+        graph.graph.add_node(1);
+        graph.graph.add_node(2);
+        graph.graph.add_node(3);
+
+        // 1 -> 2 -> 3 (no cycle)
+        graph.graph.add_edge(1, 2, ());
+        graph.graph.add_edge(2, 3, ());
+
+        assert!(graph.validate().is_ok());
+
+        // Adding 3 -> 1 would create a cycle
+        assert!(graph.would_create_cycle(3, 1));
+    }
+}
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/mod.rs
 pub mod db;
 pub mod graph;
 pub mod repo;
+pub mod resolver;
+pub mod runner;
 pub mod types;
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/repo.rs
@@ -480,6 +1140,12 @@ impl TaskRepo {
         Self { conn }
     }
 
+    /// Returns a reference to the connection.
+    #[must_use]
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Adds a new task to the database.
     ///
     /// # Errors
@@ -490,9 +1156,23 @@ impl TaskRepo {
             params![slug, title, TaskStatus::Pending.to_string()],
         )
         .context("Failed to insert task")?;
-        
+
         let id = self.conn.last_insert_rowid();
         Ok(id)
+    }
+
+    /// Adds a task with a test command.
+    ///
+    /// # Errors
+    /// Returns error if the INSERT fails.
+    pub fn add_with_test(&self, slug: &str, title: &str, test_cmd: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO tasks (slug, title, status, test_cmd) VALUES (?1, ?2, ?3, ?4)",
+            params![slug, title, TaskStatus::Pending.to_string(), test_cmd],
+        )
+        .context("Failed to insert task with test command")?;
+
+        Ok(self.conn.last_insert_rowid())
     }
 
     /// Links two tasks (dependency).
@@ -512,7 +1192,9 @@ impl TaskRepo {
     /// # Errors
     /// Returns error if the SELECT fails.
     pub fn get_all(&self) -> Result<Vec<Task>> {
-        let mut stmt = self.conn.prepare("SELECT id, slug, title, status, test_cmd, created_at FROM tasks")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks"
+        )?;
         let rows = stmt.query_map([], |row| {
             let status_str: String = row.get(3)?;
             Ok(Task {
@@ -555,13 +1237,82 @@ impl TaskRepo {
         .optional()
         .context("Failed to find task by slug")
     }
+
+    /// Finds a task by its ID.
+    ///
+    /// # Errors
+    /// Returns error if the query fails.
+    pub fn find_by_id(&self, id: i64) -> Result<Option<Task>> {
+        self.conn.query_row(
+            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks WHERE id = ?1",
+            params![id],
+            |row| {
+                let status_str: String = row.get(3)?;
+                Ok(Task {
+                    id: row.get(0)?,
+                    slug: row.get(1)?,
+                    title: row.get(2)?,
+                    status: TaskStatus::from(status_str),
+                    test_cmd: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .context("Failed to find task by id")
+    }
+
+    /// Updates the status of a task.
+    ///
+    /// # Errors
+    /// Returns error if the UPDATE fails.
+    pub fn update_status(&self, id: i64, status: TaskStatus) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET status = ?1 WHERE id = ?2",
+            params![status.to_string(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Sets the active task in the state table.
+    ///
+    /// # Errors
+    /// Returns error if the INSERT/UPDATE fails.
+    pub fn set_active_task(&self, task_id: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO state (key, value) VALUES ('active_task', ?1)",
+            params![task_id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Gets the currently active task ID.
+    ///
+    /// # Errors
+    /// Returns error if the query fails.
+    pub fn get_active_task_id(&self) -> Result<Option<i64>> {
+        let result: Option<String> = self.conn
+            .query_row(
+                "SELECT value FROM state WHERE key = 'active_task'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        match result {
+            Some(s) => Ok(s.parse::<i64>().ok()),
+            None => Ok(None),
+        }
+    }
 }
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/types.rs
+use serde::Serialize;
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum TaskStatus {
     Pending,
     Active,
@@ -591,28 +1342,33 @@ impl From<String> for TaskStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Task {
     pub id: i64,
     pub slug: String,
     pub title: String,
     pub status: TaskStatus,
     pub test_cmd: Option<String>,
-    pub created_at: String, // Simplified for now, could be DateTime
+    pub created_at: String,
 }
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/lib.rs
 pub mod engine;
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/main.rs
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use roadmap::engine::db::Db;
 use roadmap::engine::graph::TaskGraph;
 use roadmap::engine::repo::TaskRepo;
+use roadmap::engine::resolver::{slugify, TaskResolver};
+use roadmap::engine::runner::VerifyRunner;
+use roadmap::engine::types::TaskStatus;
 
 #[derive(Parser)]
 #[command(name = "roadmap", version, about = "Git for your Intent", long_about = None)]
@@ -625,20 +1381,46 @@ struct Cli {
 enum Commands {
     /// Initialize the roadmap repository
     Init,
+
     /// Add a new task
     Add {
+        /// Task title or slug
         title: String,
-        /// Task ID this new task blocks (is a dependency of)
+
+        /// Task this new task blocks (is a prerequisite of)
         #[arg(long, short = 'b')]
         blocks: Option<String>,
-        /// Task ID that blocks this new task (is a prerequisite)
+
+        /// Task that blocks this new task (prerequisite)
         #[arg(long, short = 'a')]
         after: Option<String>,
+
+        /// Verification command (e.g., "cargo test foo")
+        #[arg(long, short = 't')]
+        test: Option<String>,
     },
-    /// List next actionable tasks (Topological Sort)
-    Next,
+
+    /// Show next actionable tasks (Critical Path)
+    Next {
+        /// Output as JSON for agent consumption
+        #[arg(long)]
+        json: bool,
+    },
+
     /// List all tasks
     List,
+
+    /// Set active task ("I am working on this")
+    Do {
+        /// Task identifier (ID, slug, or fuzzy name)
+        task: String,
+    },
+
+    /// Run verification for active task
+    Check,
+
+    /// Show current status
+    Status,
 }
 
 fn main() -> Result<()> {
@@ -650,9 +1432,13 @@ fn main() -> Result<()> {
             title,
             blocks,
             after,
-        } => handle_add(title, blocks.as_deref(), after.as_deref()),
-        Commands::Next => handle_next(),
+            test,
+        } => handle_add(title, blocks.as_deref(), after.as_deref(), test.as_deref()),
+        Commands::Next { json } => handle_next(*json),
         Commands::List => handle_list(),
+        Commands::Do { task } => handle_do(task),
+        Commands::Check => handle_check(),
+        Commands::Status => handle_status(),
     }
 }
 
@@ -662,33 +1448,130 @@ fn handle_init() -> Result<()> {
     Ok(())
 }
 
-fn handle_add(title: &str, blocks: Option<&str>, after: Option<&str>) -> Result<()> {
-    let _conn = Db::connect()?;
-    // Placeholder logic until full graph engine is ready
-    println!("{} Adding task: {title}", "➜".cyan());
-    if let Some(b) = blocks {
-        println!("   Blocks: {b}");
+fn handle_add(
+    title: &str,
+    blocks: Option<&str>,
+    after: Option<&str>,
+    test_cmd: Option<&str>,
+) -> Result<()> {
+    let conn = Db::connect()?;
+    let repo = TaskRepo::new(conn);
+
+    let slug = slugify(title);
+
+    // Check for duplicate slug
+    if repo.find_by_slug(&slug)?.is_some() {
+        bail!("Task with slug '{slug}' already exists");
     }
-    if let Some(a) = after {
-        println!("   After:  {a}");
+
+    // Insert the task
+    let task_id = if let Some(cmd) = test_cmd {
+        repo.add_with_test(&slug, title, cmd)?
+    } else {
+        repo.add(&slug, title)?
+    };
+
+    println!("{} Added task [{}] {}", "✓".green(), slug.yellow(), title);
+
+    // Handle dependencies
+    let resolver = TaskResolver::new(repo.conn());
+
+    // If --after is specified, create edge: after_task -> new_task
+    if let Some(after_ref) = after {
+        let after_task = resolver.resolve(after_ref)?;
+
+        // Check for cycles
+        let graph = TaskGraph::build(repo.conn())?;
+        if graph.would_create_cycle(after_task.task.id, task_id) {
+            bail!("Adding this dependency would create a cycle!");
+        }
+
+        repo.link(after_task.task.id, task_id)?;
+        println!(
+            "   {} [{}] blocks [{}]",
+            "→".cyan(),
+            after_task.task.slug,
+            slug
+        );
     }
-    // Logic to insert into DB goes here
+
+    // If --blocks is specified, create edge: new_task -> blocks_task
+    if let Some(blocks_ref) = blocks {
+        let blocks_task = resolver.resolve(blocks_ref)?;
+
+        // Check for cycles
+        let graph = TaskGraph::build(repo.conn())?;
+        if graph.would_create_cycle(task_id, blocks_task.task.id) {
+            bail!("Adding this dependency would create a cycle!");
+        }
+
+        repo.link(task_id, blocks_task.task.id)?;
+        println!(
+            "   {} [{}] blocks [{}]",
+            "→".cyan(),
+            slug,
+            blocks_task.task.slug
+        );
+    }
+
     Ok(())
 }
 
-fn handle_next() -> Result<()> {
+fn handle_next(json: bool) -> Result<()> {
     let conn = Db::connect()?;
     let graph = TaskGraph::build(&conn)?;
     let critical_path = graph.get_critical_path();
 
-    println!("{} Next Actionable Tasks:", "➜".cyan());
+    if json {
+        let tasks: Vec<_> = critical_path
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "slug": t.slug,
+                    "title": t.title,
+                    "status": t.status.to_string(),
+                    "test_cmd": t.test_cmd
+                })
+            })
+            .collect();
+
+        println!("{}", serde_json::to_string_pretty(&tasks)?);
+        return Ok(());
+    }
+
+    println!("{} Next Actionable Tasks:", "🎯".to_string().cyan());
+
     if critical_path.is_empty() {
-        println!("   (No pending tasks found)");
-    } else {
-        for task in critical_path {
-            println!("   [{}] {}", task.slug.yellow(), task.title);
+        println!(
+            "   {} All tasks completed or none defined.",
+            "(empty)".dimmed()
+        );
+        return Ok(());
+    }
+
+    for task in critical_path {
+        let status_icon = match task.status {
+            TaskStatus::Pending => "○".dimmed(),
+            TaskStatus::Active => "●".yellow(),
+            TaskStatus::Done => "✓".green(),
+            TaskStatus::Blocked => "⊘".red(),
+        };
+
+        println!("   {} [{}] {}", status_icon, task.slug.yellow(), task.title);
+
+        // Show what this task blocks
+        let blocked = graph.get_blocked_by(task.id);
+        if !blocked.is_empty() {
+            let names: Vec<_> = blocked.iter().map(|t| t.slug.as_str()).collect();
+            println!(
+                "      {} {}",
+                "└─ blocks:".dimmed(),
+                names.join(", ").dimmed()
+            );
         }
     }
+
     Ok(())
 }
 
@@ -697,24 +1580,195 @@ fn handle_list() -> Result<()> {
     let repo = TaskRepo::new(conn);
     let tasks = repo.get_all()?;
 
-    println!("{} All Tasks:", "➜".cyan());
-    for task in tasks {
-        println!("   [{}] {} ({})", task.slug.blue(), task.title, task.status);
+    println!("{} All Tasks:", "📋".to_string().cyan());
+
+    if tasks.is_empty() {
+        println!("   {} No tasks defined yet.", "(empty)".dimmed());
+        return Ok(());
     }
+
+    for task in tasks {
+        let status_icon = match task.status {
+            TaskStatus::Pending => "○".dimmed(),
+            TaskStatus::Active => "●".yellow(),
+            TaskStatus::Done => "✓".green(),
+            TaskStatus::Blocked => "⊘".red(),
+        };
+
+        let test_indicator = if task.test_cmd.is_some() { " 🧪" } else { "" };
+
+        println!(
+            "   {} [{}] {} ({}){}",
+            status_icon,
+            task.slug.blue(),
+            task.title,
+            task.status.to_string().dimmed(),
+            test_indicator
+        );
+    }
+
     Ok(())
 }
+
+fn handle_do(task_ref: &str) -> Result<()> {
+    let conn = Db::connect()?;
+    let resolver = TaskResolver::new(&conn);
+
+    let result = resolver.resolve(task_ref)?;
+    let task = &result.task;
+
+    // Check if task is blocked
+    let graph = TaskGraph::build(&conn)?;
+    let blockers = graph.get_blockers(task.id);
+    let active_blockers: Vec<_> = blockers
+        .iter()
+        .filter(|t| t.status != TaskStatus::Done)
+        .collect();
+
+    if !active_blockers.is_empty() {
+        let names: Vec<_> = active_blockers.iter().map(|t| t.slug.as_str()).collect();
+        bail!("Task [{}] is blocked by: {}", task.slug, names.join(", "));
+    }
+
+    // Set as active
+    let repo = TaskRepo::new(conn);
+    repo.update_status(task.id, TaskStatus::Active)?;
+    repo.set_active_task(task.id)?;
+
+    println!(
+        "{} Now working on: [{}] {}",
+        "●".yellow(),
+        task.slug.yellow(),
+        task.title
+    );
+
+    if let Some(ref cmd) = task.test_cmd {
+        println!("   {} {}", "verify:".dimmed(), cmd.dimmed());
+    }
+
+    Ok(())
+}
+
+fn handle_check() -> Result<()> {
+    let conn = Db::connect()?;
+    let repo = TaskRepo::new(conn);
+
+    // Get active task
+    let active_id = repo.get_active_task_id()?;
+    let active_id = match active_id {
+        Some(id) => id,
+        None => bail!("No active task. Run `roadmap do <task>` first."),
+    };
+
+    let task = repo.find_by_id(active_id)?;
+    let task = match task {
+        Some(t) => t,
+        None => bail!("Active task not found in database."),
+    };
+
+    println!(
+        "{} Checking: [{}] {}",
+        "🔍".to_string(),
+        task.slug.yellow(),
+        task.title
+    );
+
+    // Get verification command
+    let test_cmd = match &task.test_cmd {
+        Some(cmd) => cmd,
+        None => {
+            // No test command - allow manual completion
+            println!("{} No verification command defined.", "⚠".yellow());
+            println!("   Run with --force to mark complete, or add a test:");
+            println!("   roadmap edit {} --test \"your_test_cmd\"", task.slug);
+            return Ok(());
+        }
+    };
+
+    println!("   {} {}", "running:".dimmed(), test_cmd);
+
+    // Execute verification
+    let runner = VerifyRunner::default_runner();
+    let result = runner.verify(test_cmd)?;
+
+    if result.passed() {
+        // Mark as DONE
+        repo.update_status(task.id, TaskStatus::Done)?;
+
+        println!(
+            "{} Verified! Task [{}] marked DONE ({:.2}s)",
+            "✓".green(),
+            task.slug.green(),
+            result.duration.as_secs_f64()
+        );
+
+        // Show what's now unblocked
+        let graph = TaskGraph::build(repo.conn())?;
+        let unblocked = graph.get_critical_path();
+        let newly_available: Vec<_> = unblocked.iter().filter(|t| t.id != task.id).collect();
+
+        if !newly_available.is_empty() {
+            println!("\n{} Now available:", "🎯".to_string());
+            for t in newly_available.iter().take(3) {
+                println!("   ○ [{}] {}", t.slug.yellow(), t.title);
+            }
+        }
+    } else {
+        println!(
+            "{} Verification failed. Task remains {}.",
+            "✗".red(),
+            "ACTIVE".yellow()
+        );
+    }
+
+    Ok(())
+}
+
+fn handle_status() -> Result<()> {
+    let conn = Db::connect()?;
+    let repo = TaskRepo::new(conn);
+    let graph = TaskGraph::build(repo.conn())?;
+
+    let all_tasks = repo.get_all()?;
+    let done_count = all_tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Done)
+        .count();
+    let total = all_tasks.len();
+
+    println!("{} Roadmap Status", "📊".to_string().cyan());
+    println!("   Tasks: {}/{} complete", done_count, total);
+    println!(
+        "   Graph: {} nodes, {} edges",
+        graph.task_count(),
+        graph.edge_count()
+    );
+
+    // Current focus
+    if let Some(active_id) = repo.get_active_task_id()? {
+        if let Some(task) = repo.find_by_id(active_id)? {
+            println!(
+                "\n{} Focus: [{}] {}",
+                "●".yellow(),
+                task.slug.yellow(),
+                task.title
+            );
+        }
+    } else {
+        println!("\n{} No active task", "○".dimmed());
+    }
+
+    // Next up
+    let critical = graph.get_critical_path();
+    if !critical.is_empty() {
+        println!("\n{} Next up:", "→".cyan());
+        for task in critical.iter().take(3) {
+            println!("   ○ [{}] {}", task.slug.dimmed(), task.title);
+        }
+    }
+
+    Ok(())
+}
+
 #__SLOPCHOP_END__#
 
-
-�������������������������������������������������������������������
-END CODEBASE
-�������������������������������������������������������������������
-
-SLOPCHOP CONSTRAINTS:
-? Files < 2000 tokens
-? Complexity <= 8
-? Nesting <= 3
-? Args <= 5
-? No .unwrap() or .expect()
-? Use SlopChop Format (#__SLOPCHOP_FILE__# ...)
-? Roadmap updates  tasks.toml via ===ROADMAP=== block only

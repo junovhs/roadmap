@@ -5,118 +5,185 @@
 
 ---
 
-## 1. The Philosophy
+## Quick Start
 
-Most project management tools (JIRA, Trello, text files, `TODO.md`) are **Loggers**. They rely on the user to honestly report the state of the world. They allow "split-brain" scenarios where the documentation says a task is done, but the code says otherwise.
+```bash
+# Initialize in your project
+roadmap init
+
+# Add tasks with dependencies
+roadmap add "Setup Database" --test "cargo test db_"
+roadmap add "Implement Auth" --after "Setup Database" --test "cargo test auth_"
+roadmap add "Build API" --after "Implement Auth" --test "cargo test api_"
+
+# See what's actionable (Critical Path)
+roadmap next
+
+# Start working on a task
+roadmap do "Setup Database"
+
+# Run verification (the truth oracle)
+roadmap check
+```
+
+---
+
+## Philosophy
+
+Most project management tools (JIRA, Trello, `TODO.md`) are **Loggers**. They rely on the user to honestly report the state of the world.
 
 **Roadmap** is a **State Machine**.
 
-1.  **Graph, not List:** Projects are Directed Acyclic Graphs (DAGs). You cannot build the roof before the foundation. Roadmap enforces this topologically.
-2.  **Trust, but Verify:** A task is not `DONE` until a verification command (unit test, script, build check) returns Exit Code 0.
-3.  **Local Velocity:** Built in Rust on SQLite. <10ms startup time. Designed to run inside tight Agent loops or shell prompts.
-4.  **Agent-First:** The CLI is designed to be the "Ground Truth" for AI Agents, preventing hallucinated progress by forcing them to satisfy the dependency graph.
+1. **Graph, not List:** Projects are DAGs. You cannot build the roof before the foundation.
+2. **Trust, but Verify:** A task is not `DONE` until `verify_cmd` returns Exit Code 0.
+3. **Local Velocity:** Built in Rust on SQLite. <15ms cold start.
+4. **Agent-First:** The CLI is "Ground Truth" for AI Agents, preventing hallucinated progress.
 
 ---
 
-## 2. Architecture
-
-### The Data Layer (`.roadmap/state.db`)
-We reject TOML/JSON for state storage. Text parsing is O(N); SQL is O(1).
-We use **SQLite** via `rusqlite` to maintain ACID compliance for project state.
-
-**Core Schema:**
-*   **Tasks:** Nodes in the graph. Contain the `verify_cmd` (e.g., `cargo test foo`).
-*   **Dependencies:** Edges in the graph. A task cannot be `ACTIVE` if its parent is not `DONE`.
-*   **State:** Key-value store for the "Current Context" (what the user/agent is working on *right now*).
-
-### The Graph Engine
-We use `petgraph` to model dependencies in memory.
-*   **Topological Sort:** Used to determine the "Next Actionable Task."
-*   **Cycle Detection:** Prevents "A blocks B blocks A" logic errors.
-
-### The Verification Layer ("Local CI")
-Roadmap is **tool-agnostic**. It does not know about Rust, Python, or SlopChop. It only knows **Shell Commands** and **Exit Codes**.
-*   If `verify_cmd` returns `0`, the state transitions to `DONE`.
-*   If `verify_cmd` returns `!= 0`, the state remains `ACTIVE`.
-
----
-
-## 3. The "God Mode" Interface
-
-The CLI is designed for speed (Human) and determinism (Agent).
+## Commands
 
 ### `roadmap init`
-Initializes `.roadmap/state.db`. Detects the project type (Rust/Node/Python) to set default test runner templates.
+Initialize `.roadmap/state.db` in the current directory.
 
-### `roadmap add`
-Natural language intent parsing.
+### `roadmap add <title>`
+Add a new task with optional dependencies and verification.
+
 ```bash
-# Human style
-roadmap add "Add Dark Mode" after "UI Framework"
+# Simple task
+roadmap add "Write documentation"
 
-# Agent style (Strict)
-roadmap add "feat-dark-mode" --blocks "feat-settings-page"
+# With test command (the oracle)
+roadmap add "Fix auth bug" --test "cargo test auth_middleware"
+
+# With dependency (must complete "Auth" first)
+roadmap add "Build settings page" --after "Auth"
+
+# This task blocks another (reverse dependency)
+roadmap add "Design system" --blocks "Build UI"
 ```
-*   **Fuzzy Matching:** Finds "UI Framework" task ID automatically.
-*   **Graph Insertion:** Immediately validates acyclicity.
 
-### `roadmap next` (The Critical Path)
-Calculates the **Critical Path**. Returns only tasks where `in_degree == 0` (unblocked) and `status != DONE`.
-```text
-🎯 FOCUS: [db-setup] Initialize SQLite Schema
-   └─ 🚧 BLOCKS: [impl-types] Define core structs
+**Fuzzy Resolution:** Task references can be:
+- Exact ID: `42`
+- Exact slug: `setup-database`
+- Fuzzy match: `"database"`, `"auth"`, `"Setup"`
+
+### `roadmap next`
+Show the **Critical Path** — tasks with no incomplete blockers.
+
+```bash
+# Human-readable
+roadmap next
+
+# Agent-friendly JSON
+roadmap next --json
 ```
 
 ### `roadmap do <task>`
-Context switching. Sets the global `active_task` pointer.
-*   **Human:** "I am working on this now."
-*   **Agent:** "I am focusing my context window on this problem."
+Set focus to a task. Validates dependencies are satisfied.
+
+```bash
+roadmap do "auth"
+# ● Now working on: [implement-auth] Implement Authentication
+```
 
 ### `roadmap check`
-The compilation step for your project management.
-1.  Retrieves `verify_cmd` for the active task.
-2.  Executes it.
-3.  **Success:** Marks DONE, unblocks children, updates graph.
-4.  **Failure:** Prints stderr, refuses to update state.
+**The Verification Oracle.** Runs `verify_cmd` for the active task.
+
+- **Exit 0:** Task marked `DONE`, children unblocked.
+- **Exit ≠ 0:** Task remains `ACTIVE`, stderr displayed.
+
+```bash
+roadmap check
+# 🔍 Checking: [implement-auth] Implement Authentication
+#    running: cargo test auth_
+# ✓ Verified! Task [implement-auth] marked DONE (0.42s)
+```
+
+### `roadmap list`
+Show all tasks with their status.
+
+### `roadmap status`
+Overview: completion count, active task, next available.
 
 ---
 
-## 4. Comparison to Alternatives
+## For AI Agents
 
-| Feature | Beads (Python) | Roadmap (Rust) |
-| :--- | :--- | :--- |
-| **Storage** | SQLite + JSONL (Sync logic) | SQLite (Pure ACID) |
-| **Topology** | Loose references | **Strict DAG** |
-| **Completion** | "I say it's done" | **"The test says it's done"** |
-| **Speed** | ~500ms (Python startup) | **<10ms** (Native binary) |
-| **Role** | Long-term Memory | **Active Kernel** |
+If you are an AI Agent reading this:
 
----
+1. **Do not hallucinate tasks.** Run `roadmap next --json` to see what is actually required.
+2. **Do not mark tasks done.** Run `roadmap check` and let the exit code decide.
+3. **Respect the Graph.** You cannot work on a task if its dependencies are not met.
 
-## 5. Development Status (Sitrep)
+### Agent Loop Example
 
-**Current Version:** v0.1.0 (Scaffold)
+```bash
+# 1. Query the oracle
+NEXT=$(roadmap next --json | jq -r '.[0].slug')
 
-**Implemented:**
-*   [x] Project Structure (Cargo workspace)
-*   [x] Database Engine (`src/engine/db.rs`): Schema creation & migration.
-*   [x] Data Types (`src/engine/types.rs`): Task status enum logic.
-*   [x] Basic CLI (`src/main.rs`): Argument parsing.
+# 2. Focus
+roadmap do "$NEXT"
 
-**Immediate Next Steps (The Plan):**
-1.  **Graph Logic:** Implement `petgraph` integration to handle insertions and topological sorting.
-2.  **The "Add" Parser:** Implement fuzzy string matching to link tasks by name (e.g., "Add X after Y").
-3.  **The "Check" Runner:** Implement `std::process::Command` execution for verification.
-4.  **TUI:** Implement `roadmap zen` (Ratatui interface) for a live project dashboard.
+# 3. Do the work...
+# (your code changes here)
 
-## 6. Usage for AI Agents
-
-If you are an AI Agent reading this, your instructions are simple:
-
-1.  **Do not hallucinate tasks.** Run `roadmap next` to see what is actually required.
-2.  **Do not mark tasks done.** Run `roadmap check` and let the compiler decide.
-3.  **Respect the Graph.** You cannot work on a task if its dependencies are not met.
+# 4. Verify
+roadmap check
+# If it passes, loop. If it fails, fix and retry.
+```
 
 ---
 
-*Est. 2025 - "Out-Sciencing the competition."*
+## Architecture
+
+### Data Layer (`.roadmap/state.db`)
+SQLite with ACID guarantees. No text parsing — O(1) lookups.
+
+**Schema:**
+- `tasks`: Nodes (id, slug, title, status, test_cmd)
+- `dependencies`: Edges (blocker_id → blocked_id)
+- `state`: Key-value for current context
+
+### Graph Engine (`petgraph`)
+- Topological sort for critical path
+- Cycle detection at insertion time
+- O(V+E) traversal
+
+### Verification Runner
+Tool-agnostic. Only understands:
+- Shell commands
+- Exit codes (0 = success)
+
+---
+
+## Building
+
+```bash
+cargo build --release
+# Binary at: target/release/roadmap
+
+# Or install globally
+cargo install --path .
+```
+
+---
+
+## Development Status
+
+**v0.1.0** — Core Implementation
+
+- [x] Database engine (SQLite)
+- [x] Graph engine (petgraph, cycle detection)
+- [x] Fuzzy task resolution
+- [x] Verification runner (shell execution)
+- [x] CLI commands: init, add, next, list, do, check, status
+
+**Next:**
+- [ ] `roadmap edit` — modify tasks
+- [ ] `roadmap zen` — TUI dashboard (Ratatui)
+- [ ] `--force` flag for manual overrides
+
+---
+
+*Est. 2025 — "Out-Sciencing the competition."*

@@ -1,13 +1,33 @@
-# slopchop.toml
 [rules]
 max_file_tokens = 2000
 max_cyclomatic_complexity = 8
 max_nesting_depth = 3
 max_function_args = 5
 max_function_words = 5
-ignore_naming_on = ["tests", "spec"]
+ignore_naming_on = [
+    "tests",
+    "spec",
+]
+ignore_tokens_on = [
+    "README.md",
+    "lock",
+]
 
-# No project type detected. Configure commands manually:
-# [commands]
-# check = "your-lint-command"
-# fix = "your-fix-command"
+[preferences]
+theme = "Cyberpunk"
+auto_copy = true
+auto_format = false
+auto_commit = false
+commit_prefix = "AI: "
+allow_dirty_git = false
+system_bell = false
+backup_retention = 5
+progress_bars = true
+require_plan = false
+
+[commands]
+check = [
+    "cargo clippy --all-targets -- -D warnings -W clippy::pedantic",
+    "cargo test",
+]
+fix = ["cargo fmt"]

@@ -12,6 +12,12 @@ impl TaskRepo {
         Self { conn }
     }
 
+    /// Returns a reference to the connection.
+    #[must_use]
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Adds a new task to the database.
     ///
     /// # Errors
@@ -22,9 +28,23 @@ impl TaskRepo {
             params![slug, title, TaskStatus::Pending.to_string()],
         )
         .context("Failed to insert task")?;
-        
+
         let id = self.conn.last_insert_rowid();
         Ok(id)
+    }
+
+    /// Adds a task with a test command.
+    ///
+    /// # Errors
+    /// Returns error if the INSERT fails.
+    pub fn add_with_test(&self, slug: &str, title: &str, test_cmd: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO tasks (slug, title, status, test_cmd) VALUES (?1, ?2, ?3, ?4)",
+            params![slug, title, TaskStatus::Pending.to_string(), test_cmd],
+        )
+        .context("Failed to insert task with test command")?;
+
+        Ok(self.conn.last_insert_rowid())
     }
 
     /// Links two tasks (dependency).
@@ -44,7 +64,9 @@ impl TaskRepo {
     /// # Errors
     /// Returns error if the SELECT fails.
     pub fn get_all(&self) -> Result<Vec<Task>> {
-        let mut stmt = self.conn.prepare("SELECT id, slug, title, status, test_cmd, created_at FROM tasks")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks"
+        )?;
         let rows = stmt.query_map([], |row| {
             let status_str: String = row.get(3)?;
             Ok(Task {
@@ -86,5 +108,72 @@ impl TaskRepo {
         )
         .optional()
         .context("Failed to find task by slug")
+    }
+
+    /// Finds a task by its ID.
+    ///
+    /// # Errors
+    /// Returns error if the query fails.
+    pub fn find_by_id(&self, id: i64) -> Result<Option<Task>> {
+        self.conn.query_row(
+            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks WHERE id = ?1",
+            params![id],
+            |row| {
+                let status_str: String = row.get(3)?;
+                Ok(Task {
+                    id: row.get(0)?,
+                    slug: row.get(1)?,
+                    title: row.get(2)?,
+                    status: TaskStatus::from(status_str),
+                    test_cmd: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .context("Failed to find task by id")
+    }
+
+    /// Updates the status of a task.
+    ///
+    /// # Errors
+    /// Returns error if the UPDATE fails.
+    pub fn update_status(&self, id: i64, status: TaskStatus) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET status = ?1 WHERE id = ?2",
+            params![status.to_string(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Sets the active task in the state table.
+    ///
+    /// # Errors
+    /// Returns error if the INSERT/UPDATE fails.
+    pub fn set_active_task(&self, task_id: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO state (key, value) VALUES ('active_task', ?1)",
+            params![task_id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Gets the currently active task ID.
+    ///
+    /// # Errors
+    /// Returns error if the query fails.
+    pub fn get_active_task_id(&self) -> Result<Option<i64>> {
+        let result: Option<String> = self.conn
+            .query_row(
+                "SELECT value FROM state WHERE key = 'active_task'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        match result {
+            Some(s) => Ok(s.parse::<i64>().ok()),
+            None => Ok(None),
+        }
     }
 }

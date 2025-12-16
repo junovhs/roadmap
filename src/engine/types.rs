@@ -1,6 +1,7 @@
+use serde::Serialize;
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum TaskStatus {
     Pending,
     Active,
@@ -30,12 +31,12 @@ impl From<String> for TaskStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Task {
     pub id: i64,
     pub slug: String,
     pub title: String,
     pub status: TaskStatus,
     pub test_cmd: Option<String>,
-    pub created_at: String, // Simplified for now, could be DateTime
+    pub created_at: String,
 }

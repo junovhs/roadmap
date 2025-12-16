@@ -1,12 +1,12 @@
+mod handlers;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use roadmap::engine::db::Db;
-use roadmap::engine::graph::TaskGraph;
-use roadmap::engine::repo::TaskRepo;
 
 #[derive(Parser)]
-#[command(name = "roadmap", version, about = "Git for your Intent", long_about = None)]
+#[command(name = "roadmap", version, about = "Git for your Intent")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -19,78 +19,44 @@ enum Commands {
     /// Add a new task
     Add {
         title: String,
-        /// Task ID this new task blocks (is a dependency of)
         #[arg(long, short = 'b')]
         blocks: Option<String>,
-        /// Task ID that blocks this new task (is a prerequisite)
         #[arg(long, short = 'a')]
         after: Option<String>,
+        #[arg(long, short = 't')]
+        test: Option<String>,
     },
-    /// List next actionable tasks (Topological Sort)
-    Next,
+    /// Show next actionable tasks
+    Next {
+        #[arg(long)]
+        json: bool,
+    },
     /// List all tasks
     List,
+    /// Set active task
+    Do { task: String },
+    /// Run verification for active task
+    Check,
+    /// Show current status
+    Status,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Init => handle_init(),
-        Commands::Add {
-            title,
-            blocks,
-            after,
-        } => handle_add(title, blocks.as_deref(), after.as_deref()),
-        Commands::Next => handle_next(),
-        Commands::List => handle_list(),
-    }
-}
-
-fn handle_init() -> Result<()> {
-    Db::init()?;
-    println!("{} Initialized .roadmap/state.db", "✓".green());
-    Ok(())
-}
-
-fn handle_add(title: &str, blocks: Option<&str>, after: Option<&str>) -> Result<()> {
-    let _conn = Db::connect()?;
-    // Placeholder logic until full graph engine is ready
-    println!("{} Adding task: {title}", "➜".cyan());
-    if let Some(b) = blocks {
-        println!("   Blocks: {b}");
-    }
-    if let Some(a) = after {
-        println!("   After:  {a}");
-    }
-    // Logic to insert into DB goes here
-    Ok(())
-}
-
-fn handle_next() -> Result<()> {
-    let conn = Db::connect()?;
-    let graph = TaskGraph::build(&conn)?;
-    let critical_path = graph.get_critical_path();
-
-    println!("{} Next Actionable Tasks:", "➜".cyan());
-    if critical_path.is_empty() {
-        println!("   (No pending tasks found)");
-    } else {
-        for task in critical_path {
-            println!("   [{}] {}", task.slug.yellow(), task.title);
+        Commands::Init => {
+            Db::init()?;
+            println!("{} Initialized .roadmap/state.db", "�".green());
+            Ok(())
         }
+        Commands::Add { title, blocks, after, test } => {
+            handlers::add::handle(title, blocks.as_deref(), after.as_deref(), test.as_deref())
+        }
+        Commands::Next { json } => handlers::next::handle(*json),
+        Commands::List => handlers::list::handle(),
+        Commands::Do { task } => handlers::do_task::handle(task),
+        Commands::Check => handlers::check::handle(),
+        Commands::Status => handlers::status::handle(),
     }
-    Ok(())
-}
-
-fn handle_list() -> Result<()> {
-    let conn = Db::connect()?;
-    let repo = TaskRepo::new(conn);
-    let tasks = repo.get_all()?;
-
-    println!("{} All Tasks:", "➜".cyan());
-    for task in tasks {
-        println!("   [{}] {} ({})", task.slug.blue(), task.title, task.status);
-    }
-    Ok(())
-}
+}
