@@ -1,67 +1,61 @@
+//! Task Repository: All database operations in one place.
+
 use super::types::{Proof, Task, TaskStatus};
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension};
+use std::ops::Deref;
 
-pub struct TaskRepo {
-    conn: Connection,
+/// SQL fragments - single source of truth
+const TASK_SELECT: &str = "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks";
+
+/// Repository for task operations.
+/// Works with both Connection and Transaction (via Deref).
+pub struct TaskRepo<C: Deref<Target = Connection>> {
+    conn: C,
 }
 
-impl TaskRepo {
+impl<C: Deref<Target = Connection>> TaskRepo<C> {
     #[must_use]
-    pub fn new(conn: Connection) -> Self {
+    pub fn new(conn: C) -> Self {
         Self { conn }
     }
 
-    /// Returns a reference to the connection.
+    /// Returns a reference to the underlying connection.
     #[must_use]
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
 
-    /// Begins a transaction for atomic operations.
-    ///
-    /// # Errors
-    /// Returns error if transaction cannot be started.
-    pub fn begin_transaction(&mut self) -> Result<Transaction<'_>> {
-        self.conn.transaction().context("Failed to begin transaction")
-    }
-
-    /// Adds a new task to the database.
+    /// Adds a new task, optionally with a test command.
     ///
     /// # Errors
     /// Returns error if the INSERT fails.
-    pub fn add(&self, slug: &str, title: &str) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO tasks (slug, title, status) VALUES (?1, ?2, ?3)",
-            params![slug, title, TaskStatus::Pending.to_string()],
-        )
-        .context("Failed to insert task")?;
-        
+    pub fn add(&self, slug: &str, title: &str, test_cmd: Option<&str>) -> Result<i64> {
+        match test_cmd {
+            Some(cmd) => {
+                self.conn.execute(
+                    "INSERT INTO tasks (slug, title, status, test_cmd) VALUES (?1, ?2, ?3, ?4)",
+                    params![slug, title, TaskStatus::Pending.to_string(), cmd],
+                )?;
+            }
+            None => {
+                self.conn.execute(
+                    "INSERT INTO tasks (slug, title, status) VALUES (?1, ?2, ?3)",
+                    params![slug, title, TaskStatus::Pending.to_string()],
+                )?;
+            }
+        }
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Adds a task with a test command.
+    /// Links two tasks (blocker_id blocks blocked_id).
     ///
     /// # Errors
     /// Returns error if the INSERT fails.
-    pub fn add_with_test(&self, slug: &str, title: &str, test_cmd: &str) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO tasks (slug, title, status, test_cmd) VALUES (?1, ?2, ?3, ?4)",
-            params![slug, title, TaskStatus::Pending.to_string(), test_cmd],
-        )
-        .context("Failed to insert task with test command")?;
-        
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    /// Links two tasks (dependency).
-    ///
-    /// # Errors
-    /// Returns error if the INSERT fails.
-    pub fn link(&self, source_id: i64, target_id: i64) -> Result<()> {
+    pub fn link(&self, blocker_id: i64, blocked_id: i64) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO dependencies (blocker_id, blocked_id) VALUES (?1, ?2)",
-            params![source_id, target_id],
+            params![blocker_id, blocked_id],
         )?;
         Ok(())
     }
@@ -71,9 +65,7 @@ impl TaskRepo {
     /// # Errors
     /// Returns error if the SELECT fails.
     pub fn get_all(&self) -> Result<Vec<Task>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks"
-        )?;
+        let mut stmt = self.conn.prepare(TASK_SELECT)?;
         let rows = stmt.query_map([], row_to_task)?;
 
         let mut tasks = Vec::new();
@@ -88,13 +80,23 @@ impl TaskRepo {
     /// # Errors
     /// Returns error if the query fails.
     pub fn find_by_slug(&self, slug: &str) -> Result<Option<Task>> {
-        self.conn.query_row(
-            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks WHERE slug = ?1",
-            params![slug],
-            row_to_task,
-        )
-        .optional()
-        .context("Failed to find task by slug")
+        let sql = format!("{TASK_SELECT} WHERE slug = ?1");
+        self.conn
+            .query_row(&sql, params![slug], row_to_task)
+            .optional()
+            .context("Failed to find task by slug")
+    }
+
+    /// Finds a task by slug (case-insensitive).
+    ///
+    /// # Errors
+    /// Returns error if the query fails.
+    pub fn find_by_slug_ci(&self, slug: &str) -> Result<Option<Task>> {
+        let sql = format!("{TASK_SELECT} WHERE LOWER(slug) = LOWER(?1)");
+        self.conn
+            .query_row(&sql, params![slug], row_to_task)
+            .optional()
+            .context("Failed to find task by slug")
     }
 
     /// Finds a task by its ID.
@@ -102,13 +104,11 @@ impl TaskRepo {
     /// # Errors
     /// Returns error if the query fails.
     pub fn find_by_id(&self, id: i64) -> Result<Option<Task>> {
-        self.conn.query_row(
-            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks WHERE id = ?1",
-            params![id],
-            row_to_task,
-        )
-        .optional()
-        .context("Failed to find task by id")
+        let sql = format!("{TASK_SELECT} WHERE id = ?1");
+        self.conn
+            .query_row(&sql, params![id], row_to_task)
+            .optional()
+            .context("Failed to find task by id")
     }
 
     /// Updates the status of a task.
@@ -153,7 +153,8 @@ impl TaskRepo {
     /// # Errors
     /// Returns error if the query fails.
     pub fn get_active_task_id(&self) -> Result<Option<i64>> {
-        let result: Option<String> = self.conn
+        let result: Option<String> = self
+            .conn
             .query_row(
                 "SELECT value FROM state WHERE key = 'active_task'",
                 [],
@@ -168,60 +169,8 @@ impl TaskRepo {
     }
 }
 
-/// Transaction-based operations for atomic multi-step changes.
-pub struct TxOps;
-
-impl TxOps {
-    /// Adds a task within a transaction.
-    ///
-    /// # Errors
-    /// Returns error if the INSERT fails.
-    pub fn add(tx: &Transaction<'_>, slug: &str, title: &str, test_cmd: Option<&str>) -> Result<i64> {
-        match test_cmd {
-            Some(cmd) => {
-                tx.execute(
-                    "INSERT INTO tasks (slug, title, status, test_cmd) VALUES (?1, ?2, ?3, ?4)",
-                    params![slug, title, TaskStatus::Pending.to_string(), cmd],
-                )?;
-            }
-            None => {
-                tx.execute(
-                    "INSERT INTO tasks (slug, title, status) VALUES (?1, ?2, ?3)",
-                    params![slug, title, TaskStatus::Pending.to_string()],
-                )?;
-            }
-        }
-        Ok(tx.last_insert_rowid())
-    }
-
-    /// Links two tasks within a transaction.
-    ///
-    /// # Errors
-    /// Returns error if the INSERT fails.
-    pub fn link(tx: &Transaction<'_>, source_id: i64, target_id: i64) -> Result<()> {
-        tx.execute(
-            "INSERT OR IGNORE INTO dependencies (blocker_id, blocked_id) VALUES (?1, ?2)",
-            params![source_id, target_id],
-        )?;
-        Ok(())
-    }
-
-    /// Finds a task by slug within a transaction.
-    ///
-    /// # Errors
-    /// Returns error if the query fails.
-    pub fn find_by_slug(tx: &Transaction<'_>, slug: &str) -> Result<Option<Task>> {
-        tx.query_row(
-            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks WHERE slug = ?1",
-            params![slug],
-            row_to_task,
-        )
-        .optional()
-        .context("Failed to find task by slug")
-    }
-}
-
-fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
+/// Converts a database row to a Task.
+pub fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
     let status_str: String = row.get(3)?;
     let proof_json: Option<String> = row.get(6)?;
     let proof = proof_json.and_then(|j| serde_json::from_str(&j).ok());
@@ -235,4 +184,4 @@ fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
         created_at: row.get(5)?,
         proof,
     })
-}
+}

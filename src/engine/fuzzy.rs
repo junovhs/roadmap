@@ -82,9 +82,7 @@ mod tests {
 
     #[test]
     fn test_string_similarity() {
-        // "auth" has 4 chars, "authentication" has 9 unique chars
-        // Intersection = 4, Union = 9, Jaccard � 0.44
         assert!(string_similarity("auth", "authentication") > 0.4);
         assert!(string_similarity("xyz", "abc") < 0.1);
     }
-}
+}

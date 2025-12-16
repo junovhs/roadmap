@@ -1,3 +1,5 @@
+//! Database initialization and connection management.
+
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::fs;
@@ -9,7 +11,7 @@ const DB_FILE: &str = "state.db";
 pub struct Db;
 
 impl Db {
-    /// Initializes the .roadmap directory and `SQLite` database schema.
+    /// Initializes the .roadmap directory and SQLite database schema.
     ///
     /// # Errors
     /// Returns error if directory creation, DB opening, or migration fails.
@@ -41,7 +43,7 @@ impl Db {
         Ok(conn)
     }
 
-    /// Configures `SQLite` connection for integrity and concurrency.
+    /// Configures SQLite connection for integrity and concurrency.
     fn configure(conn: &Connection) -> Result<()> {
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         conn.execute_batch("PRAGMA journal_mode = WAL;")?;
@@ -97,4 +99,4 @@ impl Db {
 
         Ok(())
     }
-}
+}

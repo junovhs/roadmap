@@ -1,8 +1,9 @@
 //! Graph Engine: In-memory DAG representation using petgraph.
 //!
-//! Provides topological sorting and cycle detection for task dependencies.
+//! Provides topological sorting, cycle detection, and frontier computation.
 
-use super::types::{Task, TaskStatus};
+use super::repo::row_to_task;
+use super::types::{DerivedStatus, Task};
 use anyhow::{bail, Result};
 use petgraph::algo::is_cyclic_directed;
 use petgraph::graphmap::DiGraphMap;
@@ -13,6 +14,7 @@ use std::collections::HashMap;
 pub struct TaskGraph {
     graph: DiGraphMap<i64, ()>,
     tasks: HashMap<i64, Task>,
+    head_sha: String,
 }
 
 impl TaskGraph {
@@ -22,6 +24,7 @@ impl TaskGraph {
         Self {
             graph: DiGraphMap::new(),
             tasks: HashMap::new(),
+            head_sha: get_git_sha(),
         }
     }
 
@@ -34,20 +37,9 @@ impl TaskGraph {
         let mut task_map = HashMap::new();
 
         let mut stmt = conn.prepare(
-            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks"
+            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks",
         )?;
-        let rows = stmt.query_map([], |row| {
-            let status_str: String = row.get(3)?;
-            Ok(Task {
-                id: row.get(0)?,
-                slug: row.get(1)?,
-                title: row.get(2)?,
-                status: TaskStatus::from(status_str),
-                test_cmd: row.get(4)?,
-                created_at: row.get(5)?,
-                proof: None,
-            })
-        })?;
+        let rows = stmt.query_map([], row_to_task)?;
 
         for t in rows {
             let task = t?;
@@ -65,7 +57,11 @@ impl TaskGraph {
             graph.add_edge(source, target, ());
         }
 
-        Ok(Self { graph, tasks: task_map })
+        Ok(Self {
+            graph,
+            tasks: task_map,
+            head_sha: get_git_sha(),
+        })
     }
 
     /// Checks if adding an edge would create a cycle.
@@ -87,38 +83,59 @@ impl TaskGraph {
         Ok(())
     }
 
-    /// Returns the frontier - tasks that are unproven and unblocked.
+    /// Returns the frontier - tasks that are actionable and unblocked.
     ///
     /// A task is on the frontier if:
-    /// 1. It is not DONE
-    /// 2. All its blockers are DONE (`in_degree` of active blockers == 0)
+    /// 1. Its derived status is UNPROVEN, STALE, or BROKEN
+    /// 2. All its blockers are PROVEN or ATTESTED
     #[must_use]
     pub fn get_frontier(&self) -> Vec<&Task> {
         let mut frontier = Vec::new();
 
         for (id, task) in &self.tasks {
-            if task.status == TaskStatus::Done {
+            let status = task.derive_status(&self.head_sha);
+
+            // Skip if already proven or attested
+            if matches!(status, DerivedStatus::Proven | DerivedStatus::Attested) {
                 continue;
             }
 
+            // Check if blocked by incomplete dependencies
             if !self.is_task_blocked(*id) {
                 frontier.push(task);
             }
         }
 
-        frontier.sort_by_key(|t| t.id);
+        // Sort: BROKEN first (needs attention), then STALE, then UNPROVEN
+        frontier.sort_by(|a, b| {
+            let status_a = a.derive_status(&self.head_sha);
+            let status_b = b.derive_status(&self.head_sha);
+            let priority = |s: DerivedStatus| match s {
+                DerivedStatus::Broken => 0,
+                DerivedStatus::Stale => 1,
+                DerivedStatus::Unproven => 2,
+                _ => 3,
+            };
+            priority(status_a).cmp(&priority(status_b)).then(a.id.cmp(&b.id))
+        });
+
         frontier
     }
 
+    /// Checks if a task is blocked by incomplete dependencies.
     fn is_task_blocked(&self, task_id: i64) -> bool {
-        let blockers = self.graph.neighbors_directed(
-            task_id,
-            petgraph::Direction::Incoming,
-        );
+        let blockers =
+            self.graph
+                .neighbors_directed(task_id, petgraph::Direction::Incoming);
 
         for source_id in blockers {
             if let Some(parent) = self.tasks.get(&source_id) {
-                if parent.status != TaskStatus::Done {
+                let parent_status = parent.derive_status(&self.head_sha);
+                // Only PROVEN and ATTESTED satisfy dependencies
+                if !matches!(
+                    parent_status,
+                    DerivedStatus::Proven | DerivedStatus::Attested
+                ) {
                     return true;
                 }
             }
@@ -155,12 +172,71 @@ impl TaskGraph {
     pub fn edge_count(&self) -> usize {
         self.graph.edge_count()
     }
+
+    /// Returns the current HEAD SHA used for staleness checks.
+    #[must_use]
+    pub fn head_sha(&self) -> &str {
+        &self.head_sha
+    }
+
+    /// Gets a task by ID.
+    #[must_use]
+    pub fn get_task(&self, id: i64) -> Option<&Task> {
+        self.tasks.get(&id)
+    }
+
+    /// Returns counts of tasks by derived status.
+    #[must_use]
+    pub fn status_counts(&self) -> StatusCounts {
+        let mut counts = StatusCounts::default();
+        for task in self.tasks.values() {
+            match task.derive_status(&self.head_sha) {
+                DerivedStatus::Unproven => counts.unproven += 1,
+                DerivedStatus::Proven => counts.proven += 1,
+                DerivedStatus::Stale => counts.stale += 1,
+                DerivedStatus::Broken => counts.broken += 1,
+                DerivedStatus::Attested => counts.attested += 1,
+            }
+        }
+        counts
+    }
 }
 
 impl Default for TaskGraph {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Debug, Default)]
+pub struct StatusCounts {
+    pub unproven: usize,
+    pub proven: usize,
+    pub stale: usize,
+    pub broken: usize,
+    pub attested: usize,
+}
+
+impl StatusCounts {
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.unproven + self.proven + self.stale + self.broken + self.attested
+    }
+
+    #[must_use]
+    pub fn complete(&self) -> usize {
+        self.proven + self.attested
+    }
+}
+
+/// Gets current git HEAD SHA.
+fn get_git_sha() -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string())
 }
 
 #[cfg(test)]
@@ -180,4 +256,4 @@ mod tests {
         assert!(graph.validate().is_ok());
         assert!(graph.would_create_cycle(3, 1));
     }
-}
+}

@@ -1,8 +1,8 @@
 [package]
 name = "roadmap"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Git for your Intent: A dependency-graph based project manager."
+description = "A proof-carrying roadmap: DAG of claims with derived truth."
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }

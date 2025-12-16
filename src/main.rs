@@ -59,7 +59,7 @@ fn main() -> Result<()> {
     match &cli.command {
         Commands::Init => {
             Db::init()?;
-            println!("{} Initialized .roadmap/state.db", "�".green());
+            println!("{} Initialized .roadmap/state.db", "✓".green());
             Ok(())
         }
         Commands::Add { title, blocks, after, test } => {
@@ -71,4 +71,4 @@ fn main() -> Result<()> {
         Commands::Check { force, reason } => handlers::check::handle(*force, reason.as_deref()),
         Commands::Status => handlers::status::handle(),
     }
-}
+}

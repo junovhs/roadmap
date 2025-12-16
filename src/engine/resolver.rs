@@ -1,9 +1,11 @@
 //! Fuzzy Task Resolver: Matches human-friendly names to task IDs.
 
 use super::fuzzy::calculate_score;
-use super::types::{Task, TaskStatus};
+use super::repo::{row_to_task, TaskRepo};
+use super::types::Task;
 use anyhow::{bail, Result};
 use rusqlite::Connection;
+use std::ops::Deref;
 
 pub use super::fuzzy::slugify;
 
@@ -23,22 +25,28 @@ pub enum MatchType {
 }
 
 /// Resolves a query string to a task.
-pub struct TaskResolver<'a> {
-    conn: &'a Connection,
+pub struct TaskResolver<'a, C: Deref<Target = Connection>> {
+    repo: TaskRepo<&'a C>,
     strict: bool,
 }
 
-impl<'a> TaskResolver<'a> {
+impl<'a, C: Deref<Target = Connection>> TaskResolver<'a, C> {
     #[must_use]
-    pub fn new(conn: &'a Connection) -> Self {
-        Self { conn, strict: false }
+    pub fn new(conn: &'a C) -> Self {
+        Self {
+            repo: TaskRepo::new(conn),
+            strict: false,
+        }
     }
 
     /// Creates a resolver in strict mode (for agents/JSON output).
     /// In strict mode, fuzzy matching is disabled - only exact matches work.
     #[must_use]
-    pub fn strict(conn: &'a Connection) -> Self {
-        Self { conn, strict: true }
+    pub fn strict(conn: &'a C) -> Self {
+        Self {
+            repo: TaskRepo::new(conn),
+            strict: true,
+        }
     }
 
     /// Resolves a query to a task with confidence scoring.
@@ -48,14 +56,24 @@ impl<'a> TaskResolver<'a> {
     pub fn resolve(&self, query: &str) -> Result<ResolveResult> {
         let query = query.trim();
 
+        // Try exact ID match
         if let Ok(id) = query.parse::<i64>() {
-            if let Some(task) = self.find_by_id(id)? {
-                return Ok(ResolveResult { task, confidence: 1.0, match_type: MatchType::ExactId });
+            if let Some(task) = self.repo.find_by_id(id)? {
+                return Ok(ResolveResult {
+                    task,
+                    confidence: 1.0,
+                    match_type: MatchType::ExactId,
+                });
             }
         }
 
-        if let Some(task) = self.find_by_slug(query)? {
-            return Ok(ResolveResult { task, confidence: 1.0, match_type: MatchType::ExactSlug });
+        // Try exact slug match (case-insensitive)
+        if let Some(task) = self.repo.find_by_slug_ci(query)? {
+            return Ok(ResolveResult {
+                task,
+                confidence: 1.0,
+                match_type: MatchType::ExactSlug,
+            });
         }
 
         if self.strict {
@@ -91,18 +109,8 @@ impl<'a> TaskResolver<'a> {
         })
     }
 
-    fn find_by_id(&self, id: i64) -> Result<Option<Task>> {
-        let sql = "SELECT id, slug, title, status, test_cmd, created_at FROM tasks WHERE id = ?1";
-        query_task_by_id(self.conn, sql, id)
-    }
-
-    fn find_by_slug(&self, slug: &str) -> Result<Option<Task>> {
-        let sql = "SELECT id, slug, title, status, test_cmd, created_at FROM tasks WHERE LOWER(slug) = LOWER(?1)";
-        query_task_by_str(self.conn, sql, slug)
-    }
-
     fn fuzzy_search(&self, query: &str) -> Result<Vec<ResolveResult>> {
-        let tasks = load_all_tasks(self.conn)?;
+        let tasks = self.repo.get_all()?;
         let query_lower = query.to_lowercase();
         let query_words: Vec<&str> = query_lower.split_whitespace().collect();
 
@@ -110,61 +118,38 @@ impl<'a> TaskResolver<'a> {
             .into_iter()
             .map(|task| {
                 let score = calculate_score(&task, &query_lower, &query_words);
-                ResolveResult { task, confidence: score, match_type: MatchType::FuzzyMatch }
+                ResolveResult {
+                    task,
+                    confidence: score,
+                    match_type: MatchType::FuzzyMatch,
+                }
             })
             .filter(|r| r.confidence > 0.0)
             .collect();
 
-        results.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(results)
     }
 }
 
 fn format_suggestions(candidates: &[ResolveResult]) -> String {
-    candidates.iter().take(3)
+    candidates
+        .iter()
+        .take(3)
         .map(|c| format!("  - [{}] {}", c.task.slug, c.task.title))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 fn format_suggestions_json(candidates: &[ResolveResult]) -> String {
-    candidates.iter().take(5)
+    candidates
+        .iter()
+        .take(5)
         .map(|c| format!("  {{\"id\": {}, \"slug\": \"{}\"}}", c.task.id, c.task.slug))
         .collect::<Vec<_>>()
         .join("\n")
 }
-
-fn query_task_by_id(conn: &Connection, sql: &str, id: i64) -> Result<Option<Task>> {
-    match conn.query_row(sql, [id], row_to_task) {
-        Ok(task) => Ok(Some(task)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-fn query_task_by_str(conn: &Connection, sql: &str, s: &str) -> Result<Option<Task>> {
-    match conn.query_row(sql, [s], row_to_task) {
-        Ok(task) => Ok(Some(task)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
-    let status_str: String = row.get(3)?;
-    Ok(Task {
-        id: row.get(0)?,
-        slug: row.get(1)?,
-        title: row.get(2)?,
-        status: TaskStatus::from(status_str),
-        test_cmd: row.get(4)?,
-        created_at: row.get(5)?,
-        proof: None,
-    })
-}
-
-fn load_all_tasks(conn: &Connection) -> Result<Vec<Task>> {
-    let mut stmt = conn.prepare("SELECT id, slug, title, status, test_cmd, created_at FROM tasks")?;
-    let rows = stmt.query_map([], row_to_task)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
