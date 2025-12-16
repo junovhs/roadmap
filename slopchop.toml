@@ -1,0 +1,13 @@
+# slopchop.toml
+[rules]
+max_file_tokens = 2000
+max_cyclomatic_complexity = 8
+max_nesting_depth = 3
+max_function_args = 5
+max_function_words = 5
+ignore_naming_on = ["tests", "spec"]
+
+# No project type detected. Configure commands manually:
+# [commands]
+# check = "your-lint-command"
+# fix = "your-fix-command"
