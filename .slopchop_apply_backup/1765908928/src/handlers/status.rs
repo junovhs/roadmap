@@ -37,10 +37,10 @@ fn print_focus(repo: &TaskRepo) -> Result<()> {
 }
 
 fn print_next(graph: &TaskGraph) {
-    let frontier = graph.get_frontier();
-    if !frontier.is_empty() {
+    let critical = graph.get_critical_path();
+    if !critical.is_empty() {
         println!("\n{} Next up:", "".cyan());
-        for task in frontier.iter().take(3) {
+        for task in critical.iter().take(3) {
             println!("   	 [{}] {}", task.slug.dimmed(), task.title);
         }
     }

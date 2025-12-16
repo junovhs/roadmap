@@ -41,7 +41,7 @@ impl Db {
         Ok(conn)
     }
 
-    /// Configures `SQLite` connection for integrity and concurrency.
+    /// Configures SQLite connection for integrity and concurrency.
     fn configure(conn: &Connection) -> Result<()> {
         // Enforce foreign key constraints
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;

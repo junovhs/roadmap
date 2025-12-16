@@ -56,7 +56,7 @@ fn mark_done(repo: &TaskRepo, task: &roadmap::engine::types::Task) -> Result<()>
     println!("{} Verified! Task [{}] marked DONE", "�".green(), task.slug.green());
 
     let graph = TaskGraph::build(repo.conn())?;
-    let available: Vec<_> = graph.get_frontier().into_iter()
+    let available: Vec<_> = graph.get_critical_path().into_iter()
         .filter(|t| t.id != task.id)
         .take(3)
         .collect();

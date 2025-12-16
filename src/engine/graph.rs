@@ -90,14 +90,14 @@ impl TaskGraph {
         Ok(())
     }
 
-    /// Returns the "Next" actionable tasks.
+    /// Returns the frontier - tasks that are unproven and unblocked.
     ///
-    /// A task is actionable if:
+    /// A task is on the frontier if:
     /// 1. It is not DONE
     /// 2. All its blockers are DONE (`in_degree` of active blockers == 0)
     #[must_use]
-    pub fn get_critical_path(&self) -> Vec<&Task> {
-        let mut actionable = Vec::new();
+    pub fn get_frontier(&self) -> Vec<&Task> {
+        let mut frontier = Vec::new();
 
         for (id, task) in &self.tasks {
             if task.status == TaskStatus::Done {
@@ -105,13 +105,13 @@ impl TaskGraph {
             }
 
             if !self.is_task_blocked(*id) {
-                actionable.push(task);
+                frontier.push(task);
             }
         }
 
         // Sort by ID to keep it deterministic
-        actionable.sort_by_key(|t| t.id);
-        actionable
+        frontier.sort_by_key(|t| t.id);
+        frontier
     }
 
     /// Checks if a task is blocked by any incomplete dependencies.
@@ -188,4 +188,4 @@ mod tests {
         // Adding 3 -> 1 would create a cycle
         assert!(graph.would_create_cycle(3, 1));
     }
-}
+}

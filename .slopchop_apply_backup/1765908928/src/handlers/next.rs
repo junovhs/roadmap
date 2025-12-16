@@ -9,13 +9,13 @@ use roadmap::engine::types::TaskStatus;
 pub fn handle(json: bool) -> Result<()> {
     let conn = Db::connect()?;
     let graph = TaskGraph::build(&conn)?;
-    let frontier = graph.get_frontier();
+    let critical_path = graph.get_critical_path();
 
     if json {
-        return print_json(&frontier);
+        return print_json(&critical_path);
     }
 
-    print_human(&frontier, &graph);
+    print_human(&critical_path, &graph);
     Ok(())
 }
 
