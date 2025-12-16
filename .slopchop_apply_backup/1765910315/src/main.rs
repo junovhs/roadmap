@@ -41,14 +41,7 @@ enum Commands {
         strict: bool,
     },
     /// Run verification for active task
-    Check {
-        /// Mark complete without verification (creates ATTESTED, not DONE)
-        #[arg(long)]
-        force: bool,
-        /// Reason for manual attestation (required with --force)
-        #[arg(long, requires = "force")]
-        reason: Option<String>,
-    },
+    Check,
     /// Show current status
     Status,
 }
@@ -68,7 +61,7 @@ fn main() -> Result<()> {
         Commands::Next { json } => handlers::next::handle(*json),
         Commands::List => handlers::list::handle(),
         Commands::Do { task, strict } => handlers::do_task::handle(task, *strict),
-        Commands::Check { force, reason } => handlers::check::handle(*force, reason.as_deref()),
+        Commands::Check => handlers::check::handle(),
         Commands::Status => handlers::status::handle(),
     }
 }

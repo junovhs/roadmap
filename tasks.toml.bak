@@ -31,7 +31,7 @@ order = 1
 [[tasks]]
 id = "v011-transactions"
 text = "Wrap add + deps + cycle check in atomic transaction"
-status = "pending"
+status = "done"
 section = "v0.1.1"
 order = 2
 

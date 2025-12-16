@@ -21,7 +21,7 @@ pub fn handle() -> Result<()> {
     for task in tasks {
         let icon = match task.status {
             TaskStatus::Pending => "	".dimmed(),
-            TaskStatus::Active | TaskStatus::Attested => "?".yellow(),
+            TaskStatus::Active => "?".yellow(),
             TaskStatus::Done => "�".green(),
             TaskStatus::Blocked => "?".red(),
         };

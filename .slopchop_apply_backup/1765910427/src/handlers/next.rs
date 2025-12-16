@@ -53,8 +53,9 @@ fn print_human(tasks: &[&roadmap::engine::types::Task], graph: &TaskGraph) {
 fn status_icon(status: TaskStatus) -> colored::ColoredString {
     match status {
         TaskStatus::Pending => "	".dimmed(),
-        TaskStatus::Active | TaskStatus::Attested => "?".yellow(),
+        TaskStatus::Active => "?".yellow(),
         TaskStatus::Done => "�".green(),
         TaskStatus::Blocked => "?".red(),
+        TaskStatus::Attested => "?".yellow(),
     }
 }

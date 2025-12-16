@@ -9,39 +9,21 @@ use roadmap::engine::runner::VerifyRunner;
 use roadmap::engine::types::{Proof, TaskStatus};
 use std::process::Command;
 
-pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
+pub fn handle() -> Result<()> {
     let conn = Db::connect()?;
     let repo = TaskRepo::new(conn);
 
     let task = get_active_task(&repo)?;
     println!("?? Checking: [{}] {}", task.slug.yellow(), task.title);
 
-    if force {
-        return handle_force(&repo, &task, reason);
-    }
-
     let Some(test_cmd) = &task.test_cmd else {
         println!("{} No verification command defined.", "?".yellow());
-        println!("   Use --force --reason \"...\" to mark as ATTESTED");
+        println!("   Run with --force to mark complete, or add a test:");
+        println!("   roadmap edit {} --test \"your_test_cmd\"", task.slug);
         return Ok(());
     };
 
     run_verification(&repo, &task, test_cmd)
-}
-
-fn handle_force(repo: &TaskRepo, task: &roadmap::engine::types::Task, reason: Option<&str>) -> Result<()> {
-    let reason = reason.unwrap_or("Manual attestation");
-    let git_sha = get_git_sha();
-
-    let proof = Proof::attested(reason, &git_sha);
-    repo.save_proof(task.id, &proof)?;
-    repo.update_status(task.id, TaskStatus::Attested)?;
-
-    println!("{} Task [{}] marked ATTESTED (not verified)", "?".yellow(), task.slug.yellow());
-    println!("   {} \"{}\"", "reason:".dimmed(), reason);
-    println!("   {} sha={}", "proof:".dimmed(), &git_sha[..7.min(git_sha.len())]);
-
-    show_unblocked(repo, task.id)
 }
 
 fn get_active_task(repo: &TaskRepo) -> Result<roadmap::engine::types::Task> {

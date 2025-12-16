@@ -83,3 +83,10 @@ text = "Append-only proof history for auditability"
 status = "pending"
 section = "v0.3.0"
 order = 1
+
+[[tasks]]
+id = "v012-force-attest"
+text = "Add --force flag to check command for ATTESTED state"
+status = "done"
+section = "v0.1.2"
+order = 0

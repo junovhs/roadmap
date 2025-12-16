@@ -7,7 +7,6 @@ pub enum TaskStatus {
     Active,
     Done,
     Blocked,
-    Attested,
 }
 
 impl fmt::Display for TaskStatus {
@@ -17,7 +16,6 @@ impl fmt::Display for TaskStatus {
             TaskStatus::Active => write!(f, "ACTIVE"),
             TaskStatus::Done => write!(f, "DONE"),
             TaskStatus::Blocked => write!(f, "BLOCKED"),
-            TaskStatus::Attested => write!(f, "ATTESTED"),
         }
     }
 }
@@ -28,7 +26,6 @@ impl From<String> for TaskStatus {
             "ACTIVE" => TaskStatus::Active,
             "DONE" => TaskStatus::Done,
             "BLOCKED" => TaskStatus::Blocked,
-            "ATTESTED" => TaskStatus::Attested,
             _ => TaskStatus::Pending,
         }
     }
@@ -45,7 +42,7 @@ pub struct Task {
     pub proof: Option<Proof>,
 }
 
-/// Evidence that a task was verified or attested.
+/// Evidence that a task was verified.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Proof {
     pub cmd: String,
@@ -53,8 +50,6 @@ pub struct Proof {
     pub git_sha: String,
     pub timestamp: String,
     pub duration_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub attested_reason: Option<String>,
 }
 
 impl Proof {
@@ -66,19 +61,6 @@ impl Proof {
             git_sha: git_sha.to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             duration_ms,
-            attested_reason: None,
-        }
-    }
-
-    #[must_use]
-    pub fn attested(reason: &str, git_sha: &str) -> Self {
-        Self {
-            cmd: "--force".to_string(),
-            exit_code: 0,
-            git_sha: git_sha.to_string(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            duration_ms: 0,
-            attested_reason: Some(reason.to_string()),
         }
     }
 }
