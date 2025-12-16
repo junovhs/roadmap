@@ -36,51 +36,61 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Init => {
-            Db::init()?;
-            println!("{} Initialized .roadmap/state.db", "✓".green());
-        }
+        Commands::Init => handle_init(),
         Commands::Add {
             title,
             blocks,
             after,
-        } => {
-            let _conn = Db::connect()?;
-            // Placeholder logic until full graph engine is ready
-            println!("{} Adding task: {title}", "➜".cyan());
-            if let Some(b) = blocks {
-                println!("   Blocks: {b}");
-            }
-            if let Some(a) = after {
-                println!("   After:  {a}");
-            }
-            // Logic to insert into DB goes here
-        }
-        Commands::Next => {
-            let conn = Db::connect()?;
-            let graph = TaskGraph::build(&conn)?;
-            let critical_path = graph.get_critical_path();
+        } => handle_add(title, blocks.as_deref(), after.as_deref()),
+        Commands::Next => handle_next(),
+        Commands::List => handle_list(),
+    }
+}
 
-            println!("{} Next Actionable Tasks:", "➜".cyan());
-            if critical_path.is_empty() {
-                println!("   (No pending tasks found)");
-            } else {
-                for task in critical_path {
-                    println!("   [{}] {}", task.slug.yellow(), task.title);
-                }
-            }
-        }
-        Commands::List => {
-            let conn = Db::connect()?;
-            let repo = TaskRepo::new(conn);
-            let tasks = repo.get_all()?;
+fn handle_init() -> Result<()> {
+    Db::init()?;
+    println!("{} Initialized .roadmap/state.db", "✓".green());
+    Ok(())
+}
 
-            println!("{} All Tasks:", "➜".cyan());
-            for task in tasks {
-                println!("   [{}] {} ({})", task.slug.blue(), task.title, task.status);
-            }
+fn handle_add(title: &str, blocks: Option<&str>, after: Option<&str>) -> Result<()> {
+    let _conn = Db::connect()?;
+    // Placeholder logic until full graph engine is ready
+    println!("{} Adding task: {title}", "➜".cyan());
+    if let Some(b) = blocks {
+        println!("   Blocks: {b}");
+    }
+    if let Some(a) = after {
+        println!("   After:  {a}");
+    }
+    // Logic to insert into DB goes here
+    Ok(())
+}
+
+fn handle_next() -> Result<()> {
+    let conn = Db::connect()?;
+    let graph = TaskGraph::build(&conn)?;
+    let critical_path = graph.get_critical_path();
+
+    println!("{} Next Actionable Tasks:", "➜".cyan());
+    if critical_path.is_empty() {
+        println!("   (No pending tasks found)");
+    } else {
+        for task in critical_path {
+            println!("   [{}] {}", task.slug.yellow(), task.title);
         }
     }
+    Ok(())
+}
 
+fn handle_list() -> Result<()> {
+    let conn = Db::connect()?;
+    let repo = TaskRepo::new(conn);
+    let tasks = repo.get_all()?;
+
+    println!("{} All Tasks:", "➜".cyan());
+    for task in tasks {
+        println!("   [{}] {} ({})", task.slug.blue(), task.title, task.status);
+    }
     Ok(())
 }
