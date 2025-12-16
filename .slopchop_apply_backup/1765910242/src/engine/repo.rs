@@ -1,6 +1,6 @@
 use super::types::{Proof, Task, TaskStatus};
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension};
 
 pub struct TaskRepo {
     conn: Connection,
@@ -16,14 +16,6 @@ impl TaskRepo {
     #[must_use]
     pub fn conn(&self) -> &Connection {
         &self.conn
-    }
-
-    /// Begins a transaction for atomic operations.
-    ///
-    /// # Errors
-    /// Returns error if transaction cannot be started.
-    pub fn begin_transaction(&mut self) -> Result<Transaction<'_>> {
-        self.conn.transaction().context("Failed to begin transaction")
     }
 
     /// Adds a new task to the database.
@@ -165,59 +157,6 @@ impl TaskRepo {
             Some(s) => Ok(s.parse::<i64>().ok()),
             None => Ok(None),
         }
-    }
-}
-
-/// Transaction-based operations for atomic multi-step changes.
-pub struct TxOps;
-
-impl TxOps {
-    /// Adds a task within a transaction.
-    ///
-    /// # Errors
-    /// Returns error if the INSERT fails.
-    pub fn add(tx: &Transaction<'_>, slug: &str, title: &str, test_cmd: Option<&str>) -> Result<i64> {
-        match test_cmd {
-            Some(cmd) => {
-                tx.execute(
-                    "INSERT INTO tasks (slug, title, status, test_cmd) VALUES (?1, ?2, ?3, ?4)",
-                    params![slug, title, TaskStatus::Pending.to_string(), cmd],
-                )?;
-            }
-            None => {
-                tx.execute(
-                    "INSERT INTO tasks (slug, title, status) VALUES (?1, ?2, ?3)",
-                    params![slug, title, TaskStatus::Pending.to_string()],
-                )?;
-            }
-        }
-        Ok(tx.last_insert_rowid())
-    }
-
-    /// Links two tasks within a transaction.
-    ///
-    /// # Errors
-    /// Returns error if the INSERT fails.
-    pub fn link(tx: &Transaction<'_>, source_id: i64, target_id: i64) -> Result<()> {
-        tx.execute(
-            "INSERT OR IGNORE INTO dependencies (blocker_id, blocked_id) VALUES (?1, ?2)",
-            params![source_id, target_id],
-        )?;
-        Ok(())
-    }
-
-    /// Finds a task by slug within a transaction.
-    ///
-    /// # Errors
-    /// Returns error if the query fails.
-    pub fn find_by_slug(tx: &Transaction<'_>, slug: &str) -> Result<Option<Task>> {
-        tx.query_row(
-            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks WHERE slug = ?1",
-            params![slug],
-            row_to_task,
-        )
-        .optional()
-        .context("Failed to find task by slug")
     }
 }
 
