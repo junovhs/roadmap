@@ -1,0 +1,57 @@
+# 📡 SYSTEM HANDOFF: PROJECT CORTEX (ROADMAP V3)
+
+**STATUS:** INITIALIZATION COMPLETE. SCAFFOLDING DEPLOYED.
+**OBJECTIVE:** Evolution of `roadmap` from a text-file utility to a graph-based project kernel.
+
+---
+
+## 1. THE PIVOT
+We have successfully extracted the roadmap functionality from the monolithic `slopchop` codebase into a standalone Rust project named **Roadmap**.
+
+**The Philosophical Shift:**
+*   **Old Way (Beads/V2):** A logger. "I did the task." -> System agrees.
+*   **New Way (Cortex/V3):** A state machine. "I did the task." -> System runs `verify_cmd`. -> Exit Code 0 required for completion.
+
+## 2. CURRENT STATE OF PLAY
+The following files have been generated and applied to the filesystem:
+
+*   **`README.md`**: The architectural bible. Contains the full specification, comparison to Beads, and the "God Mode" CLI design. **Read this first.**
+*   **`Cargo.toml`**: Dependencies locked (`rusqlite`, `petgraph`, `clap`, `colored`, `anyhow`).
+*   **`src/engine/db.rs`**: SQLite connection logic and schema migration (Tables: `tasks`, `dependencies`, `state`).
+*   **`src/engine/types.rs`**: Basic `Task` struct and `TaskStatus` enum.
+*   **`src/main.rs`**: Basic `clap` CLI structure (Init, Add, Next, List).
+
+## 3. ARCHITECTURAL CONSTRAINTS
+1.  **Zero-Latency:** The tool must feel instant. Avoid heavy startup costs.
+2.  **Tool-Agnostic:** This tool does **not** know what SlopChop is. It does not know what Rust is. It only knows **Shell Commands** and **Exit Codes**.
+3.  **Strict Graph Topology:** We are using `petgraph`. The dependency graph must be a DAG (Directed Acyclic Graph). Cycles must be rejected at the CLI level.
+
+## 4. IMMEDIATE OBJECTIVES (THE QUEUE)
+
+Your mission is to breathe life into the scaffold. The CLI compiles, but the logic is hollow.
+
+### PRIORITY ALPHA: The Graph Engine
+*   **File:** Create `src/engine/graph.rs`.
+*   **Task:** Implement the in-memory representation of the dependency graph using `petgraph`.
+*   **Requirement:** We need a function `calculate_critical_path()` that performs a topological sort on the DB rows to determine which tasks have `in_degree == 0` (no active blockers).
+
+### PRIORITY BRAVO: The "Add" Parser
+*   **File:** `src/main.rs` / `src/engine/nlp.rs` (new).
+*   **Task:** Implement fuzzy string matching for the `roadmap add` command.
+*   **Scenario:** If user types `roadmap add "Foo" after "Auth"`, the system must find the task ID for "Implement Authentication Middleware" and create a foreign key edge in the `dependencies` table.
+
+### PRIORITY CHARLIE: The Verification Runner
+*   **File:** `src/engine/runner.rs` (new).
+*   **Task:** Implement `std::process::Command` execution.
+*   **Logic:**
+    1.  Fetch `verify_cmd` from DB for active task.
+    2.  Execute shell command.
+    3.  If `status.success()` -> Update DB to `DONE`.
+    4.  Else -> Capture `stderr` and display to user.
+
+## 5. COMMAND & CONTROL
+You are operating inside the **Roadmap** repository context now.
+*   **Database:** `.roadmap/state.db` (auto-created on `cargo run -- init`).
+*   **Protocol:** Continue using the SlopChop Protocol (`#__SLOPCHOP_FILE__#`) for all code output to ensure safe ingestion.
+
+**Execute.**
