@@ -8,15 +8,9 @@ use roadmap::engine::repo::TaskRepo;
 use roadmap::engine::resolver::TaskResolver;
 use roadmap::engine::types::TaskStatus;
 
-pub fn handle(task_ref: &str, strict: bool) -> Result<()> {
+pub fn handle(task_ref: &str) -> Result<()> {
     let conn = Db::connect()?;
-
-    let resolver = if strict {
-        TaskResolver::strict(&conn)
-    } else {
-        TaskResolver::new(&conn)
-    };
-
+    let resolver = TaskResolver::new(&conn);
     let result = resolver.resolve(task_ref)?;
     let task = &result.task;
 

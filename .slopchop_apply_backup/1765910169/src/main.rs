@@ -34,12 +34,7 @@ enum Commands {
     /// List all tasks
     List,
     /// Set active task
-    Do {
-        task: String,
-        /// Strict mode: require exact ID or slug (no fuzzy matching)
-        #[arg(long)]
-        strict: bool,
-    },
+    Do { task: String },
     /// Run verification for active task
     Check,
     /// Show current status
@@ -60,7 +55,7 @@ fn main() -> Result<()> {
         }
         Commands::Next { json } => handlers::next::handle(*json),
         Commands::List => handlers::list::handle(),
-        Commands::Do { task, strict } => handlers::do_task::handle(task, *strict),
+        Commands::Do { task } => handlers::do_task::handle(task),
         Commands::Check => handlers::check::handle(),
         Commands::Status => handlers::status::handle(),
     }

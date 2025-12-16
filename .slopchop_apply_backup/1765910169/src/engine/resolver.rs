@@ -25,20 +25,12 @@ pub enum MatchType {
 /// Resolves a query string to a task.
 pub struct TaskResolver<'a> {
     conn: &'a Connection,
-    strict: bool,
 }
 
 impl<'a> TaskResolver<'a> {
     #[must_use]
     pub fn new(conn: &'a Connection) -> Self {
-        Self { conn, strict: false }
-    }
-
-    /// Creates a resolver in strict mode (for agents/JSON output).
-    /// In strict mode, fuzzy matching is disabled - only exact matches work.
-    #[must_use]
-    pub fn strict(conn: &'a Connection) -> Self {
-        Self { conn, strict: true }
+        Self { conn }
     }
 
     /// Resolves a query to a task with confidence scoring.
@@ -58,17 +50,7 @@ impl<'a> TaskResolver<'a> {
             return Ok(ResolveResult { task, confidence: 1.0, match_type: MatchType::ExactSlug });
         }
 
-        if self.strict {
-            self.strict_error(query)
-        } else {
-            self.fuzzy_resolve(query)
-        }
-    }
-
-    fn strict_error(&self, query: &str) -> Result<ResolveResult> {
-        let candidates = self.fuzzy_search(query)?;
-        let suggestions = format_suggestions_json(&candidates);
-        bail!("No exact match for '{query}'. Use ID or exact slug.\nCandidates:\n{suggestions}");
+        self.fuzzy_resolve(query)
     }
 
     fn fuzzy_resolve(&self, query: &str) -> Result<ResolveResult> {
@@ -123,13 +105,6 @@ impl<'a> TaskResolver<'a> {
 fn format_suggestions(candidates: &[ResolveResult]) -> String {
     candidates.iter().take(3)
         .map(|c| format!("  - [{}] {}", c.task.slug, c.task.title))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn format_suggestions_json(candidates: &[ResolveResult]) -> String {
-    candidates.iter().take(5)
-        .map(|c| format!("  {{\"id\": {}, \"slug\": \"{}\"}}", c.task.id, c.task.slug))
         .collect::<Vec<_>>()
         .join("\n")
 }
