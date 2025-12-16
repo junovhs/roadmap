@@ -8,6 +8,8 @@
 
 ### The Differentiator
 
+Note: I am very inspired by Beads. But, I have my own ideas, despite my respect for the Beads team. 
+
 | Tool | Question it Answers |
 |------|---------------------|
 | Beads | "What should we do next, and how do we remember it?" |
@@ -106,4 +108,4 @@ Handle manual overrides without destroying trust:
 
 ---
 
-*"What is true, right now, in this repo?"*
+*"What is true, right now, in this repo?"*
