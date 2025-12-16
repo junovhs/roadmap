@@ -1,0 +1,86 @@
+You have come a long way. What you pasted reads like a coherent product, not a “tool pile”: the thesis is crisp, the CLI loop is tight, and the implementation map matches the philosophy (small handlers, real engine core, no sprawl).
+
+That said, there are two places where the *docs now outpace the semantics*, and tightening those will preserve your differentiator as you scale usage.
+
+## What’s excellent (and genuinely differentiated)
+
+* **The positioning is now unambiguous**: “proof-carrying roadmap” + “truth oracle” is a clear wedge against Beads’ “execution memory.”
+* **ATTESTED is the right escape hatch**: you kept the “manual override” without collapsing your trust model. That’s the correct compromise.
+* **Agent ergonomics are credible**: `next --json → do → check` is a minimal, repeatable, non-hallucinatory loop.
+* **SlopChop discipline is paying off**: your structure is already “future-proofed” against feature creep.
+
+## The two semantic alignment issues to fix next
+
+### 1) You still store “Done” as a status (even if it’s gated)
+
+In your type map you still have:
+
+```rust
+TaskStatus::{ Pending, Active, Done, Blocked, Attested }
+Task { … status, … proof: Option<Proof> }
+```
+
+That’s fine for v0.1.x, but it is not yet “DONE is derived” in the strong sense you described. Right now it’s “derived at the moment of checking, then persisted as a claim.”
+
+To make “trust absolutely” real, the authoritative truth should be:
+
+* **PROVEN** if the *latest proof* passed **for current HEAD**
+* **STALE** if a proof passed, but **HEAD moved**
+* **BROKEN** if proof on HEAD failed
+* **UNPROVEN** if never proven
+
+In other words: **status becomes a view**, not the source of truth. You already have the proof fields (`cmd`, `exit_code`, `git_sha`, `timestamp`, `duration_ms`); you just need to stop treating `TaskStatus::Done` as the canonical state.
+
+Immediate minimal step for v0.2.0: implement **SHA-based staleness** first (if `proof.git_sha != HEAD` ⇒ STALE). Scope-based staleness can come later.
+
+### 2) Proof stored on the task is a dead-end for “audit & history”
+
+You’ve added a `Proof` struct, which is great. But if `Task.proof: Option<Proof>` is stored as a single record (or blob), you’ve limited yourself:
+
+* No history (“it passed, then broke, then passed”)
+* Harder debugging (“what was the last failure output?”)
+* Harder analytics (“which claims are flaky?”)
+
+If “trust” is the product, **proofs should be append-only records** in SQLite:
+
+* `claims` (or `tasks`) table: identity + intent (`title/statement`, `prove_cmd`, deps)
+* `proofs` table: every attempt (`claim_id`, `git_sha`, exit code, timestamp, duration, reason if attested, optionally output tails)
+
+You can still keep a cached “last_proof_id” on the claim for speed, but the audit log must be first-class.
+
+## Suggested “next 3 commits” that keep things simple
+
+1. **Derived state engine (no schema changes required)**
+
+   * Add a function: `derive_state(task, head_sha) -> {UNPROVEN|PROVEN|STALE|BROKEN|ATTESTED}`
+   * Update `list/status/next` to use derived state, not stored `Done`.
+   * Keep the `status` column temporarily as a cache, but stop trusting it.
+
+2. **Split proofs into their own table (small migration)**
+
+   * Replace `Task.proof: Option<Proof>` with “latest proof join.”
+   * Make `roadmap check` insert into `proofs`.
+   * This immediately unlocks `roadmap why` later without rework.
+
+3. **Make `next` semantics explicit**
+   Decide (and codify) what “actionable” means:
+
+   * Usually: `UNPROVEN | STALE | BROKEN` and unblocked by deps
+   * Whether `BROKEN` should bubble to the top is a product choice, but make it deterministic.
+
+## One warning about `--force`
+
+Keep `--force` producing **ATTESTED** forever; never let ATTESTED be treated as PROVEN in “next/frontier” calculations unless the user explicitly asks for it. Otherwise agents will learn to “force their way out of reality.”
+
+A clean rule:
+
+* PROVEN participates in satisfying dependencies.
+* ATTESTED only satisfies dependencies if the user passes something like `--allow-attested` (human intent, explicit risk).
+
+## “Ship it?”
+
+For personal dogfooding: yes, you can ship v0.1.2 as-is.
+
+For the promise you’re now making in the README (“operationally trustworthy”), I would treat the true “trust line” as: **v0.2.0 when PROVEN/STALE/BROKEN/UNPROVEN is computed against HEAD** and proofs are persistently recorded.
+
+If you want, paste your current `CREATE TABLE` schema from `db.rs`; I’ll give you an exact migration plan for the `proofs` table plus the simplest derived-state query strategy (without making the CLI more complex).
