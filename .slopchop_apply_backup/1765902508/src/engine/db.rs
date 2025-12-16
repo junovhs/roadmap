@@ -9,10 +9,7 @@ const DB_FILE: &str = "state.db";
 pub struct Db;
 
 impl Db {
-    /// Initializes the .roadmap directory and `SQLite` database schema.
-    ///
-    /// # Errors
-    /// Returns error if directory creation, DB opening, or migration fails.
+    /// Initializes the .roadmap directory and SQLite database schema.
     pub fn init() -> Result<()> {
         if !Path::new(DB_DIR).exists() {
             fs::create_dir(DB_DIR).context("Failed to create .roadmap directory")?;
@@ -27,9 +24,6 @@ impl Db {
     }
 
     /// Connects to an existing database.
-    ///
-    /// # Errors
-    /// Returns error if the database file does not exist or cannot be opened.
     pub fn connect() -> Result<Connection> {
         let db_path = Path::new(DB_DIR).join(DB_FILE);
         if !db_path.exists() {

@@ -2,8 +2,6 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use roadmap::engine::db::Db;
-use roadmap::engine::graph::TaskGraph;
-use roadmap::engine::repo::TaskRepo;
 
 #[derive(Parser)]
 #[command(name = "roadmap", version, about = "Git for your Intent", long_about = None)]
@@ -40,45 +38,26 @@ fn main() -> Result<()> {
             Db::init()?;
             println!("{} Initialized .roadmap/state.db", "✓".green());
         }
-        Commands::Add {
-            title,
-            blocks,
-            after,
-        } => {
-            let _conn = Db::connect()?;
+        Commands::Add { title, blocks, after } => {
+            let conn = Db::connect()?;
             // Placeholder logic until full graph engine is ready
-            println!("{} Adding task: {title}", "➜".cyan());
+            println!("{} Adding task: {}", "➜".cyan(), title);
             if let Some(b) = blocks {
-                println!("   Blocks: {b}");
+                println!("   Blocks: {}", b);
             }
             if let Some(a) = after {
-                println!("   After:  {a}");
+                println!("   After:  {}", a);
             }
             // Logic to insert into DB goes here
         }
         Commands::Next => {
             let conn = Db::connect()?;
-            let graph = TaskGraph::build(&conn)?;
-            let critical_path = graph.get_critical_path();
-
-            println!("{} Next Actionable Tasks:", "➜".cyan());
-            if critical_path.is_empty() {
-                println!("   (No pending tasks found)");
-            } else {
-                for task in critical_path {
-                    println!("   [{}] {}", task.slug.yellow(), task.title);
-                }
-            }
+            println!("{} Calculating critical path...", "➜".cyan());
+            // Graph traversal logic goes here
         }
         Commands::List => {
             let conn = Db::connect()?;
-            let repo = TaskRepo::new(conn);
-            let tasks = repo.get_all()?;
-
-            println!("{} All Tasks:", "➜".cyan());
-            for task in tasks {
-                println!("   [{}] {} ({})", task.slug.blue(), task.title, task.status);
-            }
+            println!("{} Listing all tasks...", "➜".cyan());
         }
     }
 

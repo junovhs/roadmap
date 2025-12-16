@@ -7,15 +7,10 @@ pub struct TaskRepo {
 }
 
 impl TaskRepo {
-    #[must_use]
     pub fn new(conn: Connection) -> Self {
         Self { conn }
     }
 
-    /// Adds a new task to the database.
-    ///
-    /// # Errors
-    /// Returns error if the INSERT fails.
     pub fn add(&self, slug: &str, title: &str) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO tasks (slug, title, status) VALUES (?1, ?2, ?3)",
@@ -27,22 +22,14 @@ impl TaskRepo {
         Ok(id)
     }
 
-    /// Links two tasks (dependency).
-    ///
-    /// # Errors
-    /// Returns error if the INSERT fails.
-    pub fn link(&self, source_id: i64, target_id: i64) -> Result<()> {
+    pub fn link(&self, blocker_id: i64, blocked_id: i64) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO dependencies (blocker_id, blocked_id) VALUES (?1, ?2)",
-            params![source_id, target_id],
+            params![blocker_id, blocked_id],
         )?;
         Ok(())
     }
 
-    /// Retrieves all tasks.
-    ///
-    /// # Errors
-    /// Returns error if the SELECT fails.
     pub fn get_all(&self) -> Result<Vec<Task>> {
         let mut stmt = self.conn.prepare("SELECT id, slug, title, status, test_cmd, created_at FROM tasks")?;
         let rows = stmt.query_map([], |row| {
@@ -64,10 +51,6 @@ impl TaskRepo {
         Ok(tasks)
     }
 
-    /// Finds a task by its slug.
-    ///
-    /// # Errors
-    /// Returns error if the query fails.
     pub fn find_by_slug(&self, slug: &str) -> Result<Option<Task>> {
         self.conn.query_row(
             "SELECT id, slug, title, status, test_cmd, created_at FROM tasks WHERE slug = ?1",
