@@ -1,75 +1,109 @@
-# Definition of Success: Project Cortex (Roadmap V3)
+# Definition of Success: Project Cortex (Roadmap)
 
-> **Objective:** Obsolesce "Logger" based project management (Beads, TODO.md) by establishing a "State Machine" based project kernel.
-
-## 1. Executive Summary
-Success is defined by shifting the burden of truth from **User Testimony** ("I say it's done") to **Computational Verification** ("The exit code is 0"). Roadmap V3 succeeds if it acts as a non-bypassable gatekeeper for project progress, serving both Human and Artificial Intelligence agents with zero latency.
+> **Thesis:** Roadmap is a proof-carrying roadmap - a DAG of claims whose completion is operationally trustworthy.
 
 ---
 
-## 2. Technical Metrics (The Hard Numbers)
+## 1. Core Philosophy
 
-To "out-science" the competition, we rely on Rust's zero-cost abstractions and SQLite's speed.
+### The Differentiator
 
-### 2.1 Latency & Performance
-*   **Cold Start:** The CLI must initialize and execute a query (`roadmap next`) in **< 15ms**.
-    *   *Context:* Beads (Python) incurs interpreter startup costs (~200ms+). Roadmap must feel instantaneous, suitable for integration into shell prompts (`PS1`) or git hooks.
-*   **Graph Traversal:** Topological sort of a graph with 1,000 nodes and 2,000 edges must complete in **< 5ms**.
-*   **Memory Footprint:** The resident set size (RSS) during idle/query operations must remain **< 10MB**.
+| Tool | Question it Answers |
+|------|---------------------|
+| Beads | "What should we do next, and how do we remember it?" |
+| **Roadmap** | "What is true right now, and what truth is missing?" |
 
-### 2.2 Data Integrity (ACID vs Eventual)
-*   **Consistency:** Zero tolerance for "Split Brain."
-    *   *Success:* Unlike Beads (which uses append-only logs for distributed merge conflict resolution), Roadmap uses SQLite strict transactions. The state on disk is always valid.
-*   **Cycle Prevention:** The system **must reject** any `roadmap add` command that introduces a cycle. This check must happen at insertion time, not read time.
+### DONE as Derived Fact
 
-### 2.3 Structural Integrity
-*   **SlopChop Compliance:** The Roadmap codebase itself must adhere to the 3 Laws.
-    *   Max Cyclomatic Complexity: **8**
-    *   Max File Tokens: **2000**
-    *   Max Nesting Depth: **3**
+"DONE" is not a flag someone sets. It is a **computed state** based on:
 
----
+1. A verifier exists (`prove_cmd`)
+2. The verifier passed (exit code 0)
+3. The proof is still valid (repo state hasn't invalidated it)
 
-## 3. The "Killer Feature" Metrics
+### The Claim Model
 
-### 3.1 The "Next" Heuristic (Critical Path Analysis)
-Success is when an Agent *never* has to guess what to do.
-*   **Constraint:** `roadmap next` must return **strictly** nodes where `in_degree == 0` (excluding DONE parents).
-*   **Metric:** An Agent following `roadmap next` instructions blindly must face **0% Blockage Errors**.
+Everything in Roadmap is a **Claim** - a statement about the project that can be proven.
 
-### 3.2 Verification Gatekeeping
-*   **The Pivot:** A task is not done until `verify_cmd` returns `0`.
-*   **Metric:** In Strict Mode, `roadmap check` is the **only** mechanism to transition a task from `ACTIVE` to `DONE`.
+```
+Claim {
+    statement: "POST /login rejects invalid credentials"
+    prove_cmd: "cargo test auth::test_login_rejection"
+    scope: ["src/auth/**"]  // what changes invalidate this
+    depends_on: [other_claim_ids]
+}
+```
 
-### 3.3 Fuzzy Resolution (The UX Bridge)
-Humans and Agents are imprecise. The tool must be forgiving on input, strict on output.
-*   **Input:** `roadmap add "Auth" after "Database"`
-*   **Resolution:** The system must resolve "Database" to task ID via:
-    1.  Exact ID Match
-    2.  Exact Slug Match
-    3.  Fuzzy Match (substring, word overlap, character similarity)
-*   **Ambiguity:** If resolution confidence is < 40%, the tool must error with suggestions.
+**Derived States:**
+- `UNPROVEN` - no proof exists
+- `PROVEN` - proof passed, still valid for current HEAD
+- `STALE` - proof passed, but scoped files changed since
+- `BROKEN` - proof ran and failed
 
 ---
 
-## 4. Agent Interaction Protocol
+## 2. Version Milestones
 
-### 4.1 The Context Window Victory
-*   **Problem:** Agents reading `TODO.md` waste tokens reading completed/blocked tasks.
-*   **Solution:** `roadmap next --json`
-*   **Metric:** Context payload reduced by **> 90%** — only the *frontier* of the graph.
+### v0.1.0 ? (Current)
+MVP scaffold. CLI works, DAG enforced, verification gates completion.
 
-### 4.2 Hallucination Containment
-*   **Scenario:** Agent claims "I fixed the bug."
-*   **Response:** System runs `roadmap check`. Test fails. System rejects the transition.
-*   **Success:** Prevents the "Lying Agent" phenomenon by grounding status in execution.
+### v0.1.1 - "Ship-Worthy"
+Earn the "trustworthy" promise with minimal additions:
+
+- [ ] **Proof evidence capture**: Store `{cmd, exit_code, sha, timestamp}` on check
+- [ ] **DB hardening**: `foreign_keys=ON`, WAL mode, busy_timeout
+- [ ] **Transactions**: Wrap add + deps + cycle check atomically
+- [ ] **Fuzzy strict mode**: `--json` returns error + candidates, never guesses
+- [ ] **Rename**: `get_critical_path()`  `get_frontier()`
+
+### v0.2.0 - "Derived Truth"
+Status becomes computed, not stored:
+
+- [ ] **Computed status**: UNPROVEN/PROVEN/STALE/BROKEN from proof + HEAD
+- [ ] **Scope field**: Define what files invalidate a proof
+- [ ] **`roadmap stale`**: Scan for invalidated proofs
+- [ ] **Rename internally**: Task  Claim, test_cmd  prove_cmd
+
+### v0.3.0 - "Attestation & Audit"
+Handle manual overrides without destroying trust:
+
+- [ ] **ATTESTED state**: `--force` creates ATTESTED (not PROVEN) with reason
+- [ ] **Audit log**: Append-only proof history
+- [ ] **`roadmap why <claim>`**: Show proof chain
 
 ---
 
-## 5. Sign-off Criteria
+## 3. Technical Constraints
 
-We are done when:
-1.  We can run `roadmap init` in a new repo.
-2.  We can script a graph of 5 dependent tasks using fuzzy names.
-3.  We can fail a test, run `roadmap check`, and see the status remain `ACTIVE`.
-4.  We can pass a test, run `roadmap check`, and see the status flip to `DONE`.
+### Performance
+- Cold start: < 15ms
+- Graph traversal (1000 nodes): < 5ms
+- Memory: < 10MB RSS
+
+### Integrity
+- SQLite strict transactions
+- Cycle rejection at insertion time
+- No `unwrap()` - all errors handled
+
+### SlopChop Compliance
+- Max file tokens: 2000
+- Max cyclomatic complexity: 8
+- Max nesting depth: 3
+
+---
+
+## 4. Sign-off Criteria
+
+### v0.1.1 ships when:
+1. `roadmap check` persists proof evidence
+2. DB uses transactions + WAL
+3. Fuzzy resolver hard-fails on ambiguity in `--json` mode
+
+### v0.2.0 ships when:
+1. `roadmap next` only shows UNPROVEN/STALE claims
+2. Changing a file in scope auto-marks claims STALE
+3. `DONE` no longer exists as stored state
+
+---
+
+*"What is true, right now, in this repo?"*
