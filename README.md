@@ -92,24 +92,24 @@ roadmap check
 
 ## Development Status
 
-### v0.1.0 ? - Core Implementation
+### v0.1.0 ✅ - Core Implementation
 - Database engine (SQLite)
 - Graph engine (petgraph, cycle detection)
 - Fuzzy claim resolution
 - Verification runner (shell execution)
 - CLI: init, add, next, list, do, check, status
 
-### v0.1.1 ? - Ship-Worthy
+### v0.1.1 ✅ - Ship-Worthy
 - Proof evidence capture (`{cmd, exit_code, sha, timestamp}`)
 - DB hardening (foreign_keys, WAL, transactions)
 - Fuzzy strict mode (`--strict` flag)
-- Renamed internals: `critical_path`  `frontier`
+- Renamed internals: `critical_path` → `frontier`
 
-### v0.1.2 ? - Dogfood-Ready
+### v0.1.2 ✅ - Dogfood-Ready
 - `--force --reason` flag for ATTESTED state
 - **Roadmap is now tracking its own development**
 
-### v0.2.0 ?? - Derived Truth
+### v0.2.0 🚧 - Derived Truth
 - [ ] Computed status: UNPROVEN/PROVEN/STALE/BROKEN
 - [ ] Scope field (what files invalidate a proof)
 - [ ] `roadmap stale` command
@@ -129,4 +129,4 @@ cargo install --path .
 
 ---
 
-*"What is true, right now, in this repo?"*
+*"What is true, right now, in this repo?"*
