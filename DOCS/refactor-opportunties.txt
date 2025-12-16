@@ -1,0 +1,73 @@
+Based on the codebase provided, here are the most significant refactoring opportunities to reduce technical debt and code volume.
+
+1. Consolidate TaskRepo and TxOps
+
+Severity: High
+The Issue: You have two separate implementations for database operations: TaskRepo (which owns Connection) and TxOps (which takes &Transaction). However, in rusqlite, Transaction implements Deref<Target = Connection>.
+The Fix: Modify TaskRepo to borrow the connection (&Connection) rather than owning it. You can then pass either a &Connection or a &Transaction to the same methods.
+Refactoring:
+
+Change struct TaskRepo { conn: Connection } to struct TaskRepo<'a> { conn: &'a Connection }.
+
+Delete struct TxOps and move its methods (like find_by_slug) into TaskRepo.
+
+In handlers/add.rs, verify logic using TaskRepo::new(&tx).
+Estimated Savings: ~60 LOC (Entire TxOps impl and duplicate SQL statements).
+
+2. Automate Enum Conversion with strum or serde
+
+Severity: Medium
+The Issue: In types.rs, you manually implement fmt::Display and From<String> for TaskStatus. This is boilerplate that grows with every new status.
+The Fix: Use the crate strum with #[derive(Display, EnumString)] or rely on serde_json for serialization.
+Refactoring:
+
+code
+Rust
+download
+content_copy
+expand_less
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::Display, strum::EnumString)]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
+pub enum TaskStatus { ... }
+
+Estimated Savings: ~35 LOC (Manual match statements for string conversion).
+
+3. Centralize SQL Query Constants
+
+Severity: Medium
+The Issue: The string "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks" appears 4 times across repo.rs and resolver.rs.
+The Fix: Define a const TASK_SELECT_FIELDS: &str in db.rs or repo.rs.
+Estimated Savings: ~15 LOC, but prevents "drift" bugs where one query forgets a new column.
+
+4. Merge add and add_with_test
+
+Severity: Low
+The Issue: In repo.rs, these two functions are nearly identical, differing only by an optional field.
+The Fix: Use a single add function that takes test_cmd: Option<&str>.
+
+code
+Rust
+download
+content_copy
+expand_less
+pub fn add(&self, slug: &str, title: &str, test_cmd: Option<&str>) -> Result<i64> { ... }
+
+Estimated Savings: ~15 LOC.
+
+5. Absorb fuzzy.rs into resolver.rs
+
+Severity: Low
+The Issue: fuzzy.rs contains only one primary function (calculate_score) and one helper. It is tightly coupled to the resolver logic.
+The Fix: Move the logic into resolver.rs as private helper functions. The fuzzy module doesn't provide enough abstraction to warrant a separate file.
+Estimated Savings: ~20 LOC (File overhead, imports, module declarations).
+
+6. Remove Manual row_to_task Duplication
+
+Severity: Low
+The Issue: row_to_task is defined in repo.rs and redefined in resolver.rs.
+The Fix: Make row_to_task a public static method on TaskRepo or Task.
+Estimated Savings: ~20 LOC.
+
+Total Estimated Savings: ~165 Lines of Code
+
+(Approx 15% reduction of the current logic-heavy files)
