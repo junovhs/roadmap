@@ -108,12 +108,23 @@ RULES:
 BEGIN CODEBASE
 ═══════════════════════════════════════════════════════════════════
 
+═══════════════════════════════════════════════════════════════════
+⚠️  ACTIVE VIOLATIONS (PRIORITY FIX REQUIRED)
+═══════════════════════════════════════════════════════════════════
+
+FILE: src/engine/runner.rs
+LAW:  LAW OF PARANOIA | LINE: 148 | Banned: '.expect()'. Use '?' or 'unwrap_or'.
+────────────────────────────────────────
+FILE: src/engine/runner.rs
+LAW:  LAW OF PARANOIA | LINE: 156 | Banned: '.expect()'. Use '?' or 'unwrap_or'.
+────────────────────────────────────────
+
 #__SLOPCHOP_FILE__# Cargo.toml
 [package]
 name = "roadmap"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Git for your Intent: A dependency-graph based project manager."
+description = "A proof-carrying roadmap: DAG of claims with derived truth."
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -420,6 +431,8 @@ fix = ["cargo fmt"]
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/db.rs
+//! Database initialization and connection management.
+
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::fs;
@@ -431,7 +444,7 @@ const DB_FILE: &str = "state.db";
 pub struct Db;
 
 impl Db {
-    /// Initializes the .roadmap directory and `SQLite` database schema.
+    /// Initializes the .roadmap directory and SQLite database schema.
     ///
     /// # Errors
     /// Returns error if directory creation, DB opening, or migration fails.
@@ -463,7 +476,7 @@ impl Db {
         Ok(conn)
     }
 
-    /// Configures `SQLite` connection for integrity and concurrency.
+    /// Configures SQLite connection for integrity and concurrency.
     fn configure(conn: &Connection) -> Result<()> {
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         conn.execute_batch("PRAGMA journal_mode = WAL;")?;
@@ -520,6 +533,7 @@ impl Db {
         Ok(())
     }
 }
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/fuzzy.rs
@@ -607,20 +621,20 @@ mod tests {
 
     #[test]
     fn test_string_similarity() {
-        // "auth" has 4 chars, "authentication" has 9 unique chars
-        // Intersection = 4, Union = 9, Jaccard � 0.44
         assert!(string_similarity("auth", "authentication") > 0.4);
         assert!(string_similarity("xyz", "abc") < 0.1);
     }
 }
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/graph.rs
 //! Graph Engine: In-memory DAG representation using petgraph.
 //!
-//! Provides topological sorting and cycle detection for task dependencies.
+//! Provides topological sorting, cycle detection, and frontier computation.
 
-use super::types::{Task, TaskStatus};
+use super::repo::row_to_task;
+use super::types::{DerivedStatus, Task};
 use anyhow::{bail, Result};
 use petgraph::algo::is_cyclic_directed;
 use petgraph::graphmap::DiGraphMap;
@@ -631,6 +645,7 @@ use std::collections::HashMap;
 pub struct TaskGraph {
     graph: DiGraphMap<i64, ()>,
     tasks: HashMap<i64, Task>,
+    head_sha: String,
 }
 
 impl TaskGraph {
@@ -640,6 +655,7 @@ impl TaskGraph {
         Self {
             graph: DiGraphMap::new(),
             tasks: HashMap::new(),
+            head_sha: get_git_sha(),
         }
     }
 
@@ -652,20 +668,9 @@ impl TaskGraph {
         let mut task_map = HashMap::new();
 
         let mut stmt = conn.prepare(
-            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks"
+            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks",
         )?;
-        let rows = stmt.query_map([], |row| {
-            let status_str: String = row.get(3)?;
-            Ok(Task {
-                id: row.get(0)?,
-                slug: row.get(1)?,
-                title: row.get(2)?,
-                status: TaskStatus::from(status_str),
-                test_cmd: row.get(4)?,
-                created_at: row.get(5)?,
-                proof: None,
-            })
-        })?;
+        let rows = stmt.query_map([], row_to_task)?;
 
         for t in rows {
             let task = t?;
@@ -683,7 +688,11 @@ impl TaskGraph {
             graph.add_edge(source, target, ());
         }
 
-        Ok(Self { graph, tasks: task_map })
+        Ok(Self {
+            graph,
+            tasks: task_map,
+            head_sha: get_git_sha(),
+        })
     }
 
     /// Checks if adding an edge would create a cycle.
@@ -705,38 +714,59 @@ impl TaskGraph {
         Ok(())
     }
 
-    /// Returns the frontier - tasks that are unproven and unblocked.
+    /// Returns the frontier - tasks that are actionable and unblocked.
     ///
     /// A task is on the frontier if:
-    /// 1. It is not DONE
-    /// 2. All its blockers are DONE (`in_degree` of active blockers == 0)
+    /// 1. Its derived status is UNPROVEN, STALE, or BROKEN
+    /// 2. All its blockers are PROVEN or ATTESTED
     #[must_use]
     pub fn get_frontier(&self) -> Vec<&Task> {
         let mut frontier = Vec::new();
 
         for (id, task) in &self.tasks {
-            if task.status == TaskStatus::Done {
+            let status = task.derive_status(&self.head_sha);
+
+            // Skip if already proven or attested
+            if matches!(status, DerivedStatus::Proven | DerivedStatus::Attested) {
                 continue;
             }
 
+            // Check if blocked by incomplete dependencies
             if !self.is_task_blocked(*id) {
                 frontier.push(task);
             }
         }
 
-        frontier.sort_by_key(|t| t.id);
+        // Sort: BROKEN first (needs attention), then STALE, then UNPROVEN
+        frontier.sort_by(|a, b| {
+            let status_a = a.derive_status(&self.head_sha);
+            let status_b = b.derive_status(&self.head_sha);
+            let priority = |s: DerivedStatus| match s {
+                DerivedStatus::Broken => 0,
+                DerivedStatus::Stale => 1,
+                DerivedStatus::Unproven => 2,
+                _ => 3,
+            };
+            priority(status_a).cmp(&priority(status_b)).then(a.id.cmp(&b.id))
+        });
+
         frontier
     }
 
+    /// Checks if a task is blocked by incomplete dependencies.
     fn is_task_blocked(&self, task_id: i64) -> bool {
-        let blockers = self.graph.neighbors_directed(
-            task_id,
-            petgraph::Direction::Incoming,
-        );
+        let blockers =
+            self.graph
+                .neighbors_directed(task_id, petgraph::Direction::Incoming);
 
         for source_id in blockers {
             if let Some(parent) = self.tasks.get(&source_id) {
-                if parent.status != TaskStatus::Done {
+                let parent_status = parent.derive_status(&self.head_sha);
+                // Only PROVEN and ATTESTED satisfy dependencies
+                if !matches!(
+                    parent_status,
+                    DerivedStatus::Proven | DerivedStatus::Attested
+                ) {
                     return true;
                 }
             }
@@ -773,12 +803,71 @@ impl TaskGraph {
     pub fn edge_count(&self) -> usize {
         self.graph.edge_count()
     }
+
+    /// Returns the current HEAD SHA used for staleness checks.
+    #[must_use]
+    pub fn head_sha(&self) -> &str {
+        &self.head_sha
+    }
+
+    /// Gets a task by ID.
+    #[must_use]
+    pub fn get_task(&self, id: i64) -> Option<&Task> {
+        self.tasks.get(&id)
+    }
+
+    /// Returns counts of tasks by derived status.
+    #[must_use]
+    pub fn status_counts(&self) -> StatusCounts {
+        let mut counts = StatusCounts::default();
+        for task in self.tasks.values() {
+            match task.derive_status(&self.head_sha) {
+                DerivedStatus::Unproven => counts.unproven += 1,
+                DerivedStatus::Proven => counts.proven += 1,
+                DerivedStatus::Stale => counts.stale += 1,
+                DerivedStatus::Broken => counts.broken += 1,
+                DerivedStatus::Attested => counts.attested += 1,
+            }
+        }
+        counts
+    }
 }
 
 impl Default for TaskGraph {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Debug, Default)]
+pub struct StatusCounts {
+    pub unproven: usize,
+    pub proven: usize,
+    pub stale: usize,
+    pub broken: usize,
+    pub attested: usize,
+}
+
+impl StatusCounts {
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.unproven + self.proven + self.stale + self.broken + self.attested
+    }
+
+    #[must_use]
+    pub fn complete(&self) -> usize {
+        self.proven + self.attested
+    }
+}
+
+/// Gets current git HEAD SHA.
+fn get_git_sha() -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string())
 }
 
 #[cfg(test)]
@@ -799,9 +888,12 @@ mod tests {
         assert!(graph.would_create_cycle(3, 1));
     }
 }
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/mod.rs
+//! Core engine modules for roadmap.
+
 pub mod db;
 pub mod fuzzy;
 pub mod graph;
@@ -809,73 +901,68 @@ pub mod repo;
 pub mod resolver;
 pub mod runner;
 pub mod types;
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/repo.rs
+//! Task Repository: All database operations in one place.
+
 use super::types::{Proof, Task, TaskStatus};
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension};
+use std::ops::Deref;
 
-pub struct TaskRepo {
-    conn: Connection,
+/// SQL fragments - single source of truth
+const TASK_SELECT: &str = "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks";
+
+/// Repository for task operations.
+/// Works with both Connection and Transaction (via Deref).
+pub struct TaskRepo<C: Deref<Target = Connection>> {
+    conn: C,
 }
 
-impl TaskRepo {
+impl<C: Deref<Target = Connection>> TaskRepo<C> {
     #[must_use]
-    pub fn new(conn: Connection) -> Self {
+    pub fn new(conn: C) -> Self {
         Self { conn }
     }
 
-    /// Returns a reference to the connection.
+    /// Returns a reference to the underlying connection.
     #[must_use]
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
 
-    /// Begins a transaction for atomic operations.
-    ///
-    /// # Errors
-    /// Returns error if transaction cannot be started.
-    pub fn begin_transaction(&mut self) -> Result<Transaction<'_>> {
-        self.conn.transaction().context("Failed to begin transaction")
-    }
-
-    /// Adds a new task to the database.
+    /// Adds a new task, optionally with a test command.
     ///
     /// # Errors
     /// Returns error if the INSERT fails.
-    pub fn add(&self, slug: &str, title: &str) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO tasks (slug, title, status) VALUES (?1, ?2, ?3)",
-            params![slug, title, TaskStatus::Pending.to_string()],
-        )
-        .context("Failed to insert task")?;
-        
+    pub fn add(&self, slug: &str, title: &str, test_cmd: Option<&str>) -> Result<i64> {
+        match test_cmd {
+            Some(cmd) => {
+                self.conn.execute(
+                    "INSERT INTO tasks (slug, title, status, test_cmd) VALUES (?1, ?2, ?3, ?4)",
+                    params![slug, title, TaskStatus::Pending.to_string(), cmd],
+                )?;
+            }
+            None => {
+                self.conn.execute(
+                    "INSERT INTO tasks (slug, title, status) VALUES (?1, ?2, ?3)",
+                    params![slug, title, TaskStatus::Pending.to_string()],
+                )?;
+            }
+        }
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Adds a task with a test command.
+    /// Links two tasks (blocker_id blocks blocked_id).
     ///
     /// # Errors
     /// Returns error if the INSERT fails.
-    pub fn add_with_test(&self, slug: &str, title: &str, test_cmd: &str) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO tasks (slug, title, status, test_cmd) VALUES (?1, ?2, ?3, ?4)",
-            params![slug, title, TaskStatus::Pending.to_string(), test_cmd],
-        )
-        .context("Failed to insert task with test command")?;
-        
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    /// Links two tasks (dependency).
-    ///
-    /// # Errors
-    /// Returns error if the INSERT fails.
-    pub fn link(&self, source_id: i64, target_id: i64) -> Result<()> {
+    pub fn link(&self, blocker_id: i64, blocked_id: i64) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO dependencies (blocker_id, blocked_id) VALUES (?1, ?2)",
-            params![source_id, target_id],
+            params![blocker_id, blocked_id],
         )?;
         Ok(())
     }
@@ -885,9 +972,7 @@ impl TaskRepo {
     /// # Errors
     /// Returns error if the SELECT fails.
     pub fn get_all(&self) -> Result<Vec<Task>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks"
-        )?;
+        let mut stmt = self.conn.prepare(TASK_SELECT)?;
         let rows = stmt.query_map([], row_to_task)?;
 
         let mut tasks = Vec::new();
@@ -902,13 +987,23 @@ impl TaskRepo {
     /// # Errors
     /// Returns error if the query fails.
     pub fn find_by_slug(&self, slug: &str) -> Result<Option<Task>> {
-        self.conn.query_row(
-            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks WHERE slug = ?1",
-            params![slug],
-            row_to_task,
-        )
-        .optional()
-        .context("Failed to find task by slug")
+        let sql = format!("{TASK_SELECT} WHERE slug = ?1");
+        self.conn
+            .query_row(&sql, params![slug], row_to_task)
+            .optional()
+            .context("Failed to find task by slug")
+    }
+
+    /// Finds a task by slug (case-insensitive).
+    ///
+    /// # Errors
+    /// Returns error if the query fails.
+    pub fn find_by_slug_ci(&self, slug: &str) -> Result<Option<Task>> {
+        let sql = format!("{TASK_SELECT} WHERE LOWER(slug) = LOWER(?1)");
+        self.conn
+            .query_row(&sql, params![slug], row_to_task)
+            .optional()
+            .context("Failed to find task by slug")
     }
 
     /// Finds a task by its ID.
@@ -916,13 +1011,11 @@ impl TaskRepo {
     /// # Errors
     /// Returns error if the query fails.
     pub fn find_by_id(&self, id: i64) -> Result<Option<Task>> {
-        self.conn.query_row(
-            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks WHERE id = ?1",
-            params![id],
-            row_to_task,
-        )
-        .optional()
-        .context("Failed to find task by id")
+        let sql = format!("{TASK_SELECT} WHERE id = ?1");
+        self.conn
+            .query_row(&sql, params![id], row_to_task)
+            .optional()
+            .context("Failed to find task by id")
     }
 
     /// Updates the status of a task.
@@ -967,7 +1060,8 @@ impl TaskRepo {
     /// # Errors
     /// Returns error if the query fails.
     pub fn get_active_task_id(&self) -> Result<Option<i64>> {
-        let result: Option<String> = self.conn
+        let result: Option<String> = self
+            .conn
             .query_row(
                 "SELECT value FROM state WHERE key = 'active_task'",
                 [],
@@ -982,60 +1076,8 @@ impl TaskRepo {
     }
 }
 
-/// Transaction-based operations for atomic multi-step changes.
-pub struct TxOps;
-
-impl TxOps {
-    /// Adds a task within a transaction.
-    ///
-    /// # Errors
-    /// Returns error if the INSERT fails.
-    pub fn add(tx: &Transaction<'_>, slug: &str, title: &str, test_cmd: Option<&str>) -> Result<i64> {
-        match test_cmd {
-            Some(cmd) => {
-                tx.execute(
-                    "INSERT INTO tasks (slug, title, status, test_cmd) VALUES (?1, ?2, ?3, ?4)",
-                    params![slug, title, TaskStatus::Pending.to_string(), cmd],
-                )?;
-            }
-            None => {
-                tx.execute(
-                    "INSERT INTO tasks (slug, title, status) VALUES (?1, ?2, ?3)",
-                    params![slug, title, TaskStatus::Pending.to_string()],
-                )?;
-            }
-        }
-        Ok(tx.last_insert_rowid())
-    }
-
-    /// Links two tasks within a transaction.
-    ///
-    /// # Errors
-    /// Returns error if the INSERT fails.
-    pub fn link(tx: &Transaction<'_>, source_id: i64, target_id: i64) -> Result<()> {
-        tx.execute(
-            "INSERT OR IGNORE INTO dependencies (blocker_id, blocked_id) VALUES (?1, ?2)",
-            params![source_id, target_id],
-        )?;
-        Ok(())
-    }
-
-    /// Finds a task by slug within a transaction.
-    ///
-    /// # Errors
-    /// Returns error if the query fails.
-    pub fn find_by_slug(tx: &Transaction<'_>, slug: &str) -> Result<Option<Task>> {
-        tx.query_row(
-            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks WHERE slug = ?1",
-            params![slug],
-            row_to_task,
-        )
-        .optional()
-        .context("Failed to find task by slug")
-    }
-}
-
-fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
+/// Converts a database row to a Task.
+pub fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
     let status_str: String = row.get(3)?;
     let proof_json: Option<String> = row.get(6)?;
     let proof = proof_json.and_then(|j| serde_json::from_str(&j).ok());
@@ -1050,15 +1092,18 @@ fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
         proof,
     })
 }
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/resolver.rs
 //! Fuzzy Task Resolver: Matches human-friendly names to task IDs.
 
 use super::fuzzy::calculate_score;
-use super::types::{Task, TaskStatus};
+use super::repo::{row_to_task, TaskRepo};
+use super::types::Task;
 use anyhow::{bail, Result};
 use rusqlite::Connection;
+use std::ops::Deref;
 
 pub use super::fuzzy::slugify;
 
@@ -1078,22 +1123,28 @@ pub enum MatchType {
 }
 
 /// Resolves a query string to a task.
-pub struct TaskResolver<'a> {
-    conn: &'a Connection,
+pub struct TaskResolver<'a, C: Deref<Target = Connection>> {
+    repo: TaskRepo<&'a C>,
     strict: bool,
 }
 
-impl<'a> TaskResolver<'a> {
+impl<'a, C: Deref<Target = Connection>> TaskResolver<'a, C> {
     #[must_use]
-    pub fn new(conn: &'a Connection) -> Self {
-        Self { conn, strict: false }
+    pub fn new(conn: &'a C) -> Self {
+        Self {
+            repo: TaskRepo::new(conn),
+            strict: false,
+        }
     }
 
     /// Creates a resolver in strict mode (for agents/JSON output).
     /// In strict mode, fuzzy matching is disabled - only exact matches work.
     #[must_use]
-    pub fn strict(conn: &'a Connection) -> Self {
-        Self { conn, strict: true }
+    pub fn strict(conn: &'a C) -> Self {
+        Self {
+            repo: TaskRepo::new(conn),
+            strict: true,
+        }
     }
 
     /// Resolves a query to a task with confidence scoring.
@@ -1103,14 +1154,24 @@ impl<'a> TaskResolver<'a> {
     pub fn resolve(&self, query: &str) -> Result<ResolveResult> {
         let query = query.trim();
 
+        // Try exact ID match
         if let Ok(id) = query.parse::<i64>() {
-            if let Some(task) = self.find_by_id(id)? {
-                return Ok(ResolveResult { task, confidence: 1.0, match_type: MatchType::ExactId });
+            if let Some(task) = self.repo.find_by_id(id)? {
+                return Ok(ResolveResult {
+                    task,
+                    confidence: 1.0,
+                    match_type: MatchType::ExactId,
+                });
             }
         }
 
-        if let Some(task) = self.find_by_slug(query)? {
-            return Ok(ResolveResult { task, confidence: 1.0, match_type: MatchType::ExactSlug });
+        // Try exact slug match (case-insensitive)
+        if let Some(task) = self.repo.find_by_slug_ci(query)? {
+            return Ok(ResolveResult {
+                task,
+                confidence: 1.0,
+                match_type: MatchType::ExactSlug,
+            });
         }
 
         if self.strict {
@@ -1146,18 +1207,8 @@ impl<'a> TaskResolver<'a> {
         })
     }
 
-    fn find_by_id(&self, id: i64) -> Result<Option<Task>> {
-        let sql = "SELECT id, slug, title, status, test_cmd, created_at FROM tasks WHERE id = ?1";
-        query_task_by_id(self.conn, sql, id)
-    }
-
-    fn find_by_slug(&self, slug: &str) -> Result<Option<Task>> {
-        let sql = "SELECT id, slug, title, status, test_cmd, created_at FROM tasks WHERE LOWER(slug) = LOWER(?1)";
-        query_task_by_str(self.conn, sql, slug)
-    }
-
     fn fuzzy_search(&self, query: &str) -> Result<Vec<ResolveResult>> {
-        let tasks = load_all_tasks(self.conn)?;
+        let tasks = self.repo.get_all()?;
         let query_lower = query.to_lowercase();
         let query_words: Vec<&str> = query_lower.split_whitespace().collect();
 
@@ -1165,70 +1216,48 @@ impl<'a> TaskResolver<'a> {
             .into_iter()
             .map(|task| {
                 let score = calculate_score(&task, &query_lower, &query_words);
-                ResolveResult { task, confidence: score, match_type: MatchType::FuzzyMatch }
+                ResolveResult {
+                    task,
+                    confidence: score,
+                    match_type: MatchType::FuzzyMatch,
+                }
             })
             .filter(|r| r.confidence > 0.0)
             .collect();
 
-        results.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(results)
     }
 }
 
 fn format_suggestions(candidates: &[ResolveResult]) -> String {
-    candidates.iter().take(3)
+    candidates
+        .iter()
+        .take(3)
         .map(|c| format!("  - [{}] {}", c.task.slug, c.task.title))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 fn format_suggestions_json(candidates: &[ResolveResult]) -> String {
-    candidates.iter().take(5)
+    candidates
+        .iter()
+        .take(5)
         .map(|c| format!("  {{\"id\": {}, \"slug\": \"{}\"}}", c.task.id, c.task.slug))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn query_task_by_id(conn: &Connection, sql: &str, id: i64) -> Result<Option<Task>> {
-    match conn.query_row(sql, [id], row_to_task) {
-        Ok(task) => Ok(Some(task)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-fn query_task_by_str(conn: &Connection, sql: &str, s: &str) -> Result<Option<Task>> {
-    match conn.query_row(sql, [s], row_to_task) {
-        Ok(task) => Ok(Some(task)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
-    let status_str: String = row.get(3)?;
-    Ok(Task {
-        id: row.get(0)?,
-        slug: row.get(1)?,
-        title: row.get(2)?,
-        status: TaskStatus::from(status_str),
-        test_cmd: row.get(4)?,
-        created_at: row.get(5)?,
-        proof: None,
-    })
-}
-
-fn load_all_tasks(conn: &Connection) -> Result<Vec<Task>> {
-    let mut stmt = conn.prepare("SELECT id, slug, title, status, test_cmd, created_at FROM tasks")?;
-    let rows = stmt.query_map([], row_to_task)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/runner.rs
 //! Verification Runner: Executes shell commands to verify task completion.
 //!
-//! The core principle: A task is not DONE until `verify_cmd` returns Exit Code 0.
+//! The core principle: A task is not PROVEN until `verify_cmd` returns Exit Code 0.
 
 use anyhow::{bail, Context, Result};
 use std::process::{Command, Output, Stdio};
@@ -1263,7 +1292,7 @@ pub struct RunnerConfig {
 impl Default for RunnerConfig {
     fn default() -> Self {
         Self {
-            timeout_secs: 300, // 5 minutes default
+            timeout_secs: 300,
             capture_output: true,
             working_dir: None,
         }
@@ -1281,7 +1310,6 @@ impl VerifyRunner {
         Self { config }
     }
 
-    /// Creates a runner with default configuration.
     #[must_use]
     pub fn default_runner() -> Self {
         Self::new(RunnerConfig::default())
@@ -1297,7 +1325,6 @@ impl VerifyRunner {
         }
 
         let start = Instant::now();
-
         let shell = if cfg!(target_os = "windows") {
             ("cmd", "/C")
         } else {
@@ -1323,19 +1350,16 @@ impl VerifyRunner {
 
         let duration = start.elapsed();
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
         Ok(VerifyResult {
             success: output.status.success(),
             exit_code: output.status.code(),
-            stdout,
-            stderr,
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             duration,
         })
     }
 
-    /// Runs verification and returns a user-friendly status.
+    /// Runs verification with user-friendly output on failure.
     ///
     /// # Errors
     /// Returns error if command fails to execute.
@@ -1361,49 +1385,14 @@ impl VerifyRunner {
     }
 }
 
-/// Common verification commands for different project types.
-pub struct VerifyTemplates;
-
-impl VerifyTemplates {
-    /// Returns a test command template for Rust projects.
-    #[must_use]
-    pub fn rust_test(test_name: &str) -> String {
-        format!("cargo test {test_name} --quiet")
-    }
-
-    /// Returns a test command template for Node.js projects.
-    #[must_use]
-    pub fn node_test(test_pattern: &str) -> String {
-        format!("npm test -- --grep \"{test_pattern}\"")
-    }
-
-    /// Returns a test command template for Python projects.
-    #[must_use]
-    pub fn python_test(test_name: &str) -> String {
-        format!("python -m pytest -q -k \"{test_name}\"")
-    }
-
-    /// Returns a simple file existence check.
-    #[must_use]
-    pub fn file_exists(path: &str) -> String {
-        if cfg!(target_os = "windows") {
-            format!("if exist \"{path}\" (exit 0) else (exit 1)")
-        } else {
-            format!("test -f \"{path}\"")
-        }
-    }
-
-    /// Returns a build success check for Rust.
-    #[must_use]
-    pub fn rust_build() -> String {
-        "cargo build --quiet".to_string()
-    }
-
-    /// Returns a lint check for Rust.
-    #[must_use]
-    pub fn rust_clippy() -> String {
-        "cargo clippy --quiet -- -D warnings".to_string()
-    }
+/// Gets current git HEAD SHA.
+pub fn get_git_sha() -> String {
+    Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string())
 }
 
 #[cfg(test)]
@@ -1413,7 +1402,7 @@ mod tests {
     #[test]
     fn test_simple_command() {
         let runner = VerifyRunner::default_runner();
-        let result = runner.run("echo hello").unwrap_or_else(|_| panic!("run failed"));
+        let result = runner.run("echo hello").expect("run failed");
         assert!(result.passed());
         assert!(result.stdout.contains("hello"));
     }
@@ -1421,26 +1410,269 @@ mod tests {
     #[test]
     fn test_failing_command() {
         let runner = VerifyRunner::default_runner();
-        let result = runner.run("exit 1").unwrap_or_else(|_| panic!("run failed"));
+        let result = runner.run("exit 1").expect("run failed");
         assert!(!result.passed());
         assert_eq!(result.exit_code, Some(1));
     }
+}
+
+#__SLOPCHOP_END__#
+
+#__SLOPCHOP_FILE__# src/engine/state.rs
+//! Derived State Engine: Computes task status from proof evidence.
+//!
+//! This module is the "truth oracle" - it answers "what is the actual state
+//! of this task right now?" by examining proof evidence against current HEAD.
+//!
+//! Designed to be lightweight and fast for UI consumption (Dioxus dashboard).
+
+use super::types::{Proof, Task, TaskStatus};
+use std::process::Command;
+
+/// The derived (computed) state of a task.
+///
+/// Unlike `TaskStatus` (which is stored), `DerivedStatus` is computed
+/// from proof evidence and current repository state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DerivedStatus {
+    /// No proof exists - task has never been verified
+    Unproven,
+    /// Proof passed and is still valid for current HEAD
+    Proven,
+    /// Proof passed, but HEAD has moved since verification
+    Stale,
+    /// Proof ran and failed (exit code != 0)
+    Broken,
+    /// Manually attested (human override, not machine-verified)
+    Attested,
+}
+
+impl DerivedStatus {
+    /// Returns the display color hint for UI rendering.
+    #[must_use]
+    pub fn color_hint(&self) -> &'static str {
+        match self {
+            DerivedStatus::Proven => "green",
+            DerivedStatus::Stale => "amber",
+            DerivedStatus::Broken => "red",
+            DerivedStatus::Unproven => "gray",
+            DerivedStatus::Attested => "blue",
+        }
+    }
+
+    /// Returns true if this task should appear in the frontier (actionable).
+    #[must_use]
+    pub fn is_actionable(&self) -> bool {
+        matches!(self, DerivedStatus::Unproven | DerivedStatus::Stale | DerivedStatus::Broken)
+    }
+
+    /// Returns true if this task satisfies dependency requirements.
+    ///
+    /// Note: ATTESTED does NOT satisfy dependencies by default.
+    /// This is intentional - agents shouldn't be able to "force their way out."
+    #[must_use]
+    pub fn satisfies_dependency(&self) -> bool {
+        matches!(self, DerivedStatus::Proven)
+    }
+
+    /// Returns true if this task satisfies dependencies (including attested).
+    ///
+    /// Use this only when explicitly allowing attested tasks to unblock work.
+    #[must_use]
+    pub fn satisfies_dependency_lenient(&self) -> bool {
+        matches!(self, DerivedStatus::Proven | DerivedStatus::Attested)
+    }
+}
+
+impl std::fmt::Display for DerivedStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DerivedStatus::Unproven => write!(f, "UNPROVEN"),
+            DerivedStatus::Proven => write!(f, "PROVEN"),
+            DerivedStatus::Stale => write!(f, "STALE"),
+            DerivedStatus::Broken => write!(f, "BROKEN"),
+            DerivedStatus::Attested => write!(f, "ATTESTED"),
+        }
+    }
+}
+
+/// Derives the current state of a task based on proof evidence and HEAD.
+///
+/// This is a pure function - no I/O, no side effects. Fast enough for
+/// real-time UI updates (< 1µs per call).
+///
+/// # Arguments
+/// * `task` - The task to evaluate
+/// * `head_sha` - Current git HEAD (call `get_head_sha()` once per batch)
+#[must_use]
+pub fn derive_state(task: &Task, head_sha: &str) -> DerivedStatus {
+    // Check for attestation first (stored status indicates manual override)
+    if task.status == TaskStatus::Attested {
+        return DerivedStatus::Attested;
+    }
+
+    // No proof = unproven
+    let Some(proof) = &task.proof else {
+        return DerivedStatus::Unproven;
+    };
+
+    // Proof with non-zero exit = broken
+    if proof.exit_code != 0 {
+        return DerivedStatus::Broken;
+    }
+
+    // Proof passed but HEAD moved = stale
+    if !sha_matches(&proof.git_sha, head_sha) {
+        return DerivedStatus::Stale;
+    }
+
+    // Proof passed and HEAD matches = proven
+    DerivedStatus::Proven
+}
+
+/// Compare git SHAs (handles short vs full, and "unknown")
+fn sha_matches(stored: &str, current: &str) -> bool {
+    if stored == "unknown" || current == "unknown" {
+        return true; // Be lenient if git unavailable
+    }
+    let min_len = stored.len().min(current.len()).min(7);
+    if min_len == 0 {
+        return false;
+    }
+    stored[..min_len] == current[..min_len]
+}
+
+/// Gets the current git HEAD SHA.
+///
+/// Returns "unknown" if not in a git repository.
+/// Cache this value when processing multiple tasks.
+#[must_use]
+pub fn get_head_sha() -> String {
+    Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string())
+}
+
+/// A task with its derived state pre-computed.
+///
+/// Useful for UI rendering where you need both task data and state.
+#[derive(Debug, Clone)]
+pub struct TaskWithState {
+    pub task: Task,
+    pub state: DerivedStatus,
+}
+
+impl TaskWithState {
+    #[must_use]
+    pub fn new(task: Task, head_sha: &str) -> Self {
+        let state = derive_state(&task, head_sha);
+        Self { task, state }
+    }
+}
+
+/// Batch-derives state for multiple tasks.
+///
+/// More efficient than calling `derive_state` in a loop because
+/// it fetches HEAD once. Use this for list/dashboard views.
+#[must_use]
+pub fn derive_all_states(tasks: Vec<Task>) -> Vec<TaskWithState> {
+    let head_sha = get_head_sha();
+    tasks
+        .into_iter()
+        .map(|task| TaskWithState::new(task, &head_sha))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_task(status: TaskStatus, proof: Option<Proof>) -> Task {
+        Task {
+            id: 1,
+            slug: "test".to_string(),
+            title: "Test Task".to_string(),
+            status,
+            test_cmd: Some("echo ok".to_string()),
+            created_at: "2024-01-01".to_string(),
+            proof,
+        }
+    }
 
     #[test]
-    fn test_empty_command() {
-        let runner = VerifyRunner::default_runner();
-        let result = runner.run("");
-        assert!(result.is_err());
+    fn test_unproven_no_proof() {
+        let task = make_task(TaskStatus::Pending, None);
+        assert_eq!(derive_state(&task, "abc123"), DerivedStatus::Unproven);
+    }
+
+    #[test]
+    fn test_proven_matching_sha() {
+        let proof = Proof::new("echo ok", 0, "abc123", 100);
+        let task = make_task(TaskStatus::Done, Some(proof));
+        assert_eq!(derive_state(&task, "abc123"), DerivedStatus::Proven);
+    }
+
+    #[test]
+    fn test_stale_sha_moved() {
+        let proof = Proof::new("echo ok", 0, "abc123", 100);
+        let task = make_task(TaskStatus::Done, Some(proof));
+        assert_eq!(derive_state(&task, "def456"), DerivedStatus::Stale);
+    }
+
+    #[test]
+    fn test_broken_nonzero_exit() {
+        let proof = Proof::new("exit 1", 1, "abc123", 100);
+        let task = make_task(TaskStatus::Active, Some(proof));
+        assert_eq!(derive_state(&task, "abc123"), DerivedStatus::Broken);
+    }
+
+    #[test]
+    fn test_attested_status() {
+        let proof = Proof::attested("manual review", "abc123");
+        let task = make_task(TaskStatus::Attested, Some(proof));
+        assert_eq!(derive_state(&task, "abc123"), DerivedStatus::Attested);
+    }
+
+    #[test]
+    fn test_actionable_states() {
+        assert!(DerivedStatus::Unproven.is_actionable());
+        assert!(DerivedStatus::Stale.is_actionable());
+        assert!(DerivedStatus::Broken.is_actionable());
+        assert!(!DerivedStatus::Proven.is_actionable());
+        assert!(!DerivedStatus::Attested.is_actionable());
+    }
+
+    #[test]
+    fn test_dependency_satisfaction() {
+        assert!(DerivedStatus::Proven.satisfies_dependency());
+        assert!(!DerivedStatus::Attested.satisfies_dependency());
+        assert!(!DerivedStatus::Stale.satisfies_dependency());
+
+        // Lenient mode includes attested
+        assert!(DerivedStatus::Proven.satisfies_dependency_lenient());
+        assert!(DerivedStatus::Attested.satisfies_dependency_lenient());
     }
 }
 
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/engine/types.rs
+//! Core types for the Roadmap system.
+//!
+//! Note: `DerivedStatus` (the computed truth) lives in `state.rs`.
+//! `TaskStatus` here is the stored/cached status in SQLite.
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Stored status in the database.
+///
+/// Note: This is a cache/legacy field. The **true** status is computed
+/// by `state::derive_state()` from proof evidence + current HEAD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
     Pending,
     Active,
@@ -1452,11 +1684,11 @@ pub enum TaskStatus {
 impl fmt::Display for TaskStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TaskStatus::Pending => write!(f, "PENDING"),
-            TaskStatus::Active => write!(f, "ACTIVE"),
-            TaskStatus::Done => write!(f, "DONE"),
-            TaskStatus::Blocked => write!(f, "BLOCKED"),
-            TaskStatus::Attested => write!(f, "ATTESTED"),
+            Self::Pending => write!(f, "PENDING"),
+            Self::Active => write!(f, "ACTIVE"),
+            Self::Done => write!(f, "DONE"),
+            Self::Blocked => write!(f, "BLOCKED"),
+            Self::Attested => write!(f, "ATTESTED"),
         }
     }
 }
@@ -1464,20 +1696,22 @@ impl fmt::Display for TaskStatus {
 impl From<String> for TaskStatus {
     fn from(s: String) -> Self {
         match s.as_str() {
-            "ACTIVE" => TaskStatus::Active,
-            "DONE" => TaskStatus::Done,
-            "BLOCKED" => TaskStatus::Blocked,
-            "ATTESTED" => TaskStatus::Attested,
-            _ => TaskStatus::Pending,
+            "ACTIVE" => Self::Active,
+            "DONE" => Self::Done,
+            "BLOCKED" => Self::Blocked,
+            "ATTESTED" => Self::Attested,
+            _ => Self::Pending,
         }
     }
 }
 
+/// A task/claim in the roadmap.
 #[derive(Debug, Clone, Serialize)]
 pub struct Task {
     pub id: i64,
     pub slug: String,
     pub title: String,
+    /// Cached status (see `state::derive_state()` for truth)
     pub status: TaskStatus,
     pub test_cmd: Option<String>,
     pub created_at: String,
@@ -1521,6 +1755,7 @@ impl Proof {
         }
     }
 }
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/handlers/add.rs
@@ -1530,23 +1765,29 @@ use anyhow::{bail, Result};
 use colored::Colorize;
 use roadmap::engine::db::Db;
 use roadmap::engine::graph::TaskGraph;
-use roadmap::engine::repo::TxOps;
+use roadmap::engine::repo::TaskRepo;
 use roadmap::engine::resolver::{slugify, TaskResolver};
 
-pub fn handle(title: &str, blocks: Option<&str>, after: Option<&str>, test_cmd: Option<&str>) -> Result<()> {
+pub fn handle(
+    title: &str,
+    blocks: Option<&str>,
+    after: Option<&str>,
+    test_cmd: Option<&str>,
+) -> Result<()> {
     let mut conn = Db::connect()?;
     let slug = slugify(title);
 
     // Start transaction for atomic add + deps + cycle check
     let tx = conn.transaction()?;
+    let repo = TaskRepo::new(&tx);
 
     // Check for duplicate
-    if TxOps::find_by_slug(&tx, &slug)?.is_some() {
+    if repo.find_by_slug(&slug)?.is_some() {
         bail!("Task with slug '{slug}' already exists");
     }
 
     // Insert task
-    let task_id = TxOps::add(&tx, &slug, title, test_cmd)?;
+    let task_id = repo.add(&slug, title, test_cmd)?;
 
     // Handle --after dependency
     if let Some(after_ref) = after {
@@ -1558,8 +1799,13 @@ pub fn handle(title: &str, blocks: Option<&str>, after: Option<&str>, test_cmd: 
             bail!("Adding this dependency would create a cycle!");
         }
 
-        TxOps::link(&tx, after_task.task.id, task_id)?;
-        println!("   {} [{}] blocks [{}]", "".cyan(), after_task.task.slug, slug);
+        repo.link(after_task.task.id, task_id)?;
+        println!(
+            "   {} [{}] blocks [{}]",
+            "→".cyan(),
+            after_task.task.slug,
+            slug
+        );
     }
 
     // Handle --blocks dependency
@@ -1572,16 +1818,22 @@ pub fn handle(title: &str, blocks: Option<&str>, after: Option<&str>, test_cmd: 
             bail!("Adding this dependency would create a cycle!");
         }
 
-        TxOps::link(&tx, task_id, blocks_task.task.id)?;
-        println!("   {} [{}] blocks [{}]", "".cyan(), slug, blocks_task.task.slug);
+        repo.link(task_id, blocks_task.task.id)?;
+        println!(
+            "   {} [{}] blocks [{}]",
+            "→".cyan(),
+            slug,
+            blocks_task.task.slug
+        );
     }
 
     // Commit only if everything succeeded
     tx.commit()?;
 
-    println!("{} Added task [{}] {}", "�".green(), slug.yellow(), title);
+    println!("{} Added task [{}] {}", "✓".green(), slug.yellow(), title);
     Ok(())
 }
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/handlers/check.rs
@@ -1592,46 +1844,65 @@ use colored::Colorize;
 use roadmap::engine::db::Db;
 use roadmap::engine::graph::TaskGraph;
 use roadmap::engine::repo::TaskRepo;
-use roadmap::engine::runner::VerifyRunner;
-use roadmap::engine::types::{Proof, TaskStatus};
-use std::process::Command;
+use roadmap::engine::runner::{get_git_sha, VerifyRunner};
+use roadmap::engine::types::{DerivedStatus, Proof, Task, TaskStatus};
 
 pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
     let conn = Db::connect()?;
-    let repo = TaskRepo::new(conn);
+    let repo = TaskRepo::new(&conn);
+    let head_sha = get_git_sha();
 
     let task = get_active_task(&repo)?;
-    println!("?? Checking: [{}] {}", task.slug.yellow(), task.title);
+    let derived = task.derive_status(&head_sha);
+
+    println!(
+        "🔍 Checking: [{}] {} ({})",
+        task.slug.yellow(),
+        task.title,
+        derived.to_string().dimmed()
+    );
 
     if force {
-        return handle_force(&repo, &task, reason);
+        return handle_force(&repo, &task, reason, &head_sha);
     }
 
     let Some(test_cmd) = &task.test_cmd else {
-        println!("{} No verification command defined.", "?".yellow());
+        println!("{} No verification command defined.", "⚠".yellow());
         println!("   Use --force --reason \"...\" to mark as ATTESTED");
         return Ok(());
     };
 
-    run_verification(&repo, &task, test_cmd)
+    run_verification(&repo, &task, test_cmd, &head_sha)
 }
 
-fn handle_force(repo: &TaskRepo, task: &roadmap::engine::types::Task, reason: Option<&str>) -> Result<()> {
+fn handle_force(
+    repo: &TaskRepo<&rusqlite::Connection>,
+    task: &Task,
+    reason: Option<&str>,
+    git_sha: &str,
+) -> Result<()> {
     let reason = reason.unwrap_or("Manual attestation");
-    let git_sha = get_git_sha();
 
-    let proof = Proof::attested(reason, &git_sha);
+    let proof = Proof::attested(reason, git_sha);
     repo.save_proof(task.id, &proof)?;
     repo.update_status(task.id, TaskStatus::Attested)?;
 
-    println!("{} Task [{}] marked ATTESTED (not verified)", "?".yellow(), task.slug.yellow());
+    println!(
+        "{} Task [{}] marked ATTESTED (not verified)",
+        "⚠".yellow(),
+        task.slug.yellow()
+    );
     println!("   {} \"{}\"", "reason:".dimmed(), reason);
-    println!("   {} sha={}", "proof:".dimmed(), &git_sha[..7.min(git_sha.len())]);
+    println!(
+        "   {} sha={}",
+        "proof:".dimmed(),
+        &git_sha[..7.min(git_sha.len())]
+    );
 
     show_unblocked(repo, task.id)
 }
 
-fn get_active_task(repo: &TaskRepo) -> Result<roadmap::engine::types::Task> {
+fn get_active_task(repo: &TaskRepo<&rusqlite::Connection>) -> Result<Task> {
     let Some(active_id) = repo.get_active_task_id()? else {
         bail!("No active task. Run `roadmap do <task>` first.");
     };
@@ -1643,65 +1914,101 @@ fn get_active_task(repo: &TaskRepo) -> Result<roadmap::engine::types::Task> {
     Ok(task)
 }
 
-fn run_verification(repo: &TaskRepo, task: &roadmap::engine::types::Task, test_cmd: &str) -> Result<()> {
+fn run_verification(
+    repo: &TaskRepo<&rusqlite::Connection>,
+    task: &Task,
+    test_cmd: &str,
+    head_sha: &str,
+) -> Result<()> {
     println!("   {} {}", "running:".dimmed(), test_cmd);
 
     let runner = VerifyRunner::default_runner();
     let result = runner.verify(test_cmd)?;
 
     if result.passed() {
-        mark_done(repo, task, test_cmd, &result)
+        mark_proven(repo, task, test_cmd, &result, head_sha)
     } else {
-        println!("{} Verification failed. Task remains {}.", "?".red(), "ACTIVE".yellow());
-        Ok(())
+        mark_broken(repo, task, test_cmd, &result, head_sha)
     }
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn mark_done(
-    repo: &TaskRepo,
-    task: &roadmap::engine::types::Task,
+fn mark_proven(
+    repo: &TaskRepo<&rusqlite::Connection>,
+    task: &Task,
     cmd: &str,
     result: &roadmap::engine::runner::VerifyResult,
+    git_sha: &str,
 ) -> Result<()> {
-    let git_sha = get_git_sha();
     let duration_ms = result.duration.as_millis() as u64;
     let exit_code = result.exit_code.unwrap_or(0);
 
-    let proof = Proof::new(cmd, exit_code, &git_sha, duration_ms);
+    let proof = Proof::new(cmd, exit_code, git_sha, duration_ms);
     repo.save_proof(task.id, &proof)?;
     repo.update_status(task.id, TaskStatus::Done)?;
 
-    println!("{} Verified! Task [{}] marked DONE", "�".green(), task.slug.green());
-    println!("   {} sha={} duration={}ms", "proof:".dimmed(), &git_sha[..7.min(git_sha.len())], duration_ms);
+    println!(
+        "{} PROVEN! Task [{}] verified",
+        "✓".green(),
+        task.slug.green()
+    );
+    println!(
+        "   {} sha={} duration={}ms",
+        "proof:".dimmed(),
+        &git_sha[..7.min(git_sha.len())],
+        duration_ms
+    );
 
     show_unblocked(repo, task.id)
 }
 
-fn show_unblocked(repo: &TaskRepo, done_id: i64) -> Result<()> {
+#[allow(clippy::cast_possible_truncation)]
+fn mark_broken(
+    repo: &TaskRepo<&rusqlite::Connection>,
+    task: &Task,
+    cmd: &str,
+    result: &roadmap::engine::runner::VerifyResult,
+    git_sha: &str,
+) -> Result<()> {
+    let duration_ms = result.duration.as_millis() as u64;
+    let exit_code = result.exit_code.unwrap_or(1);
+
+    // Save the failed proof for history
+    let proof = Proof::new(cmd, exit_code, git_sha, duration_ms);
+    repo.save_proof(task.id, &proof)?;
+
+    println!(
+        "{} BROKEN! Task [{}] verification failed",
+        "✗".red(),
+        task.slug.red()
+    );
+    Ok(())
+}
+
+fn show_unblocked(repo: &TaskRepo<&rusqlite::Connection>, done_id: i64) -> Result<()> {
     let graph = TaskGraph::build(repo.conn())?;
-    let available: Vec<_> = graph.get_frontier().into_iter()
+    let available: Vec<_> = graph
+        .get_frontier()
+        .into_iter()
         .filter(|t| t.id != done_id)
         .take(3)
         .collect();
 
     if !available.is_empty() {
-        println!("\n?? Now available:");
+        println!("\n🎯 Now available:");
         for t in available {
-            println!("   	 [{}] {}", t.slug.yellow(), t.title);
+            let status = t.derive_status(graph.head_sha());
+            println!(
+                "   ○ [{}] {} ({})",
+                t.slug.yellow(),
+                t.title,
+                status.to_string().dimmed()
+            );
         }
     }
     Ok(())
 }
 
-fn get_git_sha() -> String {
-    Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string())
-}
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/handlers/do_task.rs
@@ -1713,10 +2020,12 @@ use roadmap::engine::db::Db;
 use roadmap::engine::graph::TaskGraph;
 use roadmap::engine::repo::TaskRepo;
 use roadmap::engine::resolver::TaskResolver;
-use roadmap::engine::types::TaskStatus;
+use roadmap::engine::runner::get_git_sha;
+use roadmap::engine::types::{DerivedStatus, TaskStatus};
 
 pub fn handle(task_ref: &str, strict: bool) -> Result<()> {
     let conn = Db::connect()?;
+    let head_sha = get_git_sha();
 
     let resolver = if strict {
         TaskResolver::strict(&conn)
@@ -1727,13 +2036,20 @@ pub fn handle(task_ref: &str, strict: bool) -> Result<()> {
     let result = resolver.resolve(task_ref)?;
     let task = &result.task;
 
-    check_not_blocked(&conn, task)?;
+    check_not_blocked(&conn, task, &head_sha)?;
 
-    let repo = TaskRepo::new(conn);
+    let repo = TaskRepo::new(&conn);
     repo.update_status(task.id, TaskStatus::Active)?;
     repo.set_active_task(task.id)?;
 
-    println!("{} Now working on: [{}] {}", "?".yellow(), task.slug.yellow(), task.title);
+    let derived = task.derive_status(&head_sha);
+    println!(
+        "{} Now working on: [{}] {} ({})",
+        "→".yellow(),
+        task.slug.yellow(),
+        task.title,
+        derived.to_string().dimmed()
+    );
 
     if let Some(ref cmd) = task.test_cmd {
         println!("   {} {}", "verify:".dimmed(), cmd.dimmed());
@@ -1742,20 +2058,33 @@ pub fn handle(task_ref: &str, strict: bool) -> Result<()> {
     Ok(())
 }
 
-fn check_not_blocked(conn: &rusqlite::Connection, task: &roadmap::engine::types::Task) -> Result<()> {
+fn check_not_blocked(conn: &rusqlite::Connection, task: &roadmap::engine::types::Task, head_sha: &str) -> Result<()> {
     let graph = TaskGraph::build(conn)?;
     let blockers = graph.get_blockers(task.id);
-    let active: Vec<_> = blockers.iter()
-        .filter(|t| t.status != TaskStatus::Done)
+
+    let incomplete: Vec<_> = blockers
+        .iter()
+        .filter(|t| {
+            let status = t.derive_status(head_sha);
+            !matches!(status, DerivedStatus::Proven | DerivedStatus::Attested)
+        })
         .collect();
 
-    if !active.is_empty() {
-        let names: Vec<_> = active.iter().map(|t| t.slug.as_str()).collect();
-        bail!("Task [{}] is blocked by: {}", task.slug, names.join(", "));
+    if !incomplete.is_empty() {
+        let names: Vec<_> = incomplete
+            .iter()
+            .map(|t| format!("{} ({})", t.slug, t.derive_status(head_sha)))
+            .collect();
+        bail!(
+            "Task [{}] is blocked by: {}",
+            task.slug,
+            names.join(", ")
+        );
     }
 
     Ok(())
 }
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/handlers/list.rs
@@ -1765,14 +2094,16 @@ use anyhow::Result;
 use colored::Colorize;
 use roadmap::engine::db::Db;
 use roadmap::engine::repo::TaskRepo;
-use roadmap::engine::types::TaskStatus;
+use roadmap::engine::runner::get_git_sha;
+use roadmap::engine::types::DerivedStatus;
 
 pub fn handle() -> Result<()> {
     let conn = Db::connect()?;
-    let repo = TaskRepo::new(conn);
+    let repo = TaskRepo::new(&conn);
     let tasks = repo.get_all()?;
+    let head_sha = get_git_sha();
 
-    println!("{} All Tasks:", "??".cyan());
+    println!("{} All Tasks:", "📋".cyan());
 
     if tasks.is_empty() {
         println!("   {} No tasks defined yet.", "(empty)".dimmed());
@@ -1780,18 +2111,31 @@ pub fn handle() -> Result<()> {
     }
 
     for task in tasks {
-        let icon = match task.status {
-            TaskStatus::Pending => "	".dimmed(),
-            TaskStatus::Active | TaskStatus::Attested => "?".yellow(),
-            TaskStatus::Done => "�".green(),
-            TaskStatus::Blocked => "?".red(),
-        };
-        let test = if task.test_cmd.is_some() { " ??" } else { "" };
-        println!("   {} [{}] {} ({}){}", icon, task.slug.blue(), task.title, task.status.to_string().dimmed(), test);
+        let derived = task.derive_status(&head_sha);
+        let icon = status_icon(derived);
+        let test = if task.test_cmd.is_some() { " 🧪" } else { "" };
+        println!(
+            "   {} [{}] {} ({}){test}",
+            icon,
+            task.slug.blue(),
+            task.title,
+            derived.to_string().dimmed()
+        );
     }
 
     Ok(())
 }
+
+fn status_icon(status: DerivedStatus) -> colored::ColoredString {
+    match status {
+        DerivedStatus::Unproven => "○".dimmed(),
+        DerivedStatus::Proven => "✓".green(),
+        DerivedStatus::Stale => "⟳".yellow(),
+        DerivedStatus::Broken => "✗".red(),
+        DerivedStatus::Attested => "◐".yellow(),
+    }
+}
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/handlers/mod.rs
@@ -1801,6 +2145,7 @@ pub mod do_task;
 pub mod list;
 pub mod next;
 pub mod status;
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/handlers/next.rs
@@ -1810,7 +2155,7 @@ use anyhow::Result;
 use colored::Colorize;
 use roadmap::engine::db::Db;
 use roadmap::engine::graph::TaskGraph;
-use roadmap::engine::types::TaskStatus;
+use roadmap::engine::types::DerivedStatus;
 
 pub fn handle(json: bool) -> Result<()> {
     let conn = Db::connect()?;
@@ -1818,52 +2163,75 @@ pub fn handle(json: bool) -> Result<()> {
     let frontier = graph.get_frontier();
 
     if json {
-        return print_json(&frontier);
+        return print_json(&frontier, graph.head_sha());
     }
 
     print_human(&frontier, &graph);
     Ok(())
 }
 
-fn print_json(tasks: &[&roadmap::engine::types::Task]) -> Result<()> {
-    let output: Vec<_> = tasks.iter().map(|t| {
-        serde_json::json!({
-            "id": t.id, "slug": t.slug, "title": t.title,
-            "status": t.status.to_string(), "test_cmd": t.test_cmd
+fn print_json(tasks: &[&roadmap::engine::types::Task], head_sha: &str) -> Result<()> {
+    let output: Vec<_> = tasks
+        .iter()
+        .map(|t| {
+            let derived = t.derive_status(head_sha);
+            serde_json::json!({
+                "id": t.id,
+                "slug": t.slug,
+                "title": t.title,
+                "status": derived.to_string(),
+                "test_cmd": t.test_cmd
+            })
         })
-    }).collect();
+        .collect();
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
 fn print_human(tasks: &[&roadmap::engine::types::Task], graph: &TaskGraph) {
-    println!("{} Next Actionable Tasks:", "??".cyan());
+    println!("{} Actionable Tasks (frontier):", "🎯".cyan());
 
     if tasks.is_empty() {
-        println!("   {} All tasks completed or none defined.", "(empty)".dimmed());
+        println!(
+            "   {} All claims proven or none defined.",
+            "(empty)".dimmed()
+        );
         return;
     }
 
     for task in tasks {
-        let icon = status_icon(task.status);
-        println!("   {} [{}] {}", icon, task.slug.yellow(), task.title);
+        let derived = task.derive_status(graph.head_sha());
+        let icon = status_icon(derived);
+        println!(
+            "   {} [{}] {} ({})",
+            icon,
+            task.slug.yellow(),
+            task.title,
+            derived.to_string().dimmed()
+        );
 
         let blocked = graph.get_blocked_by(task.id);
         if !blocked.is_empty() {
             let names: Vec<_> = blocked.iter().map(|t| t.slug.as_str()).collect();
-            println!("      {} {}", "�� blocks:".dimmed(), names.join(", ").dimmed());
+            println!(
+                "      {} {}",
+                "↳ unblocks:".dimmed(),
+                names.join(", ").dimmed()
+            );
         }
     }
 }
 
-fn status_icon(status: TaskStatus) -> colored::ColoredString {
+fn status_icon(status: DerivedStatus) -> colored::ColoredString {
     match status {
-        TaskStatus::Pending => "	".dimmed(),
-        TaskStatus::Active | TaskStatus::Attested => "?".yellow(),
-        TaskStatus::Done => "�".green(),
-        TaskStatus::Blocked => "?".red(),
+        DerivedStatus::Broken => "✗".red(),
+        DerivedStatus::Stale => "⟳".yellow(),
+        DerivedStatus::Unproven => "○".dimmed(),
+        DerivedStatus::Proven => "✓".green(),
+        DerivedStatus::Attested => "◐".yellow(),
     }
 }
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/handlers/status.rs
@@ -1874,46 +2242,96 @@ use colored::Colorize;
 use roadmap::engine::db::Db;
 use roadmap::engine::graph::TaskGraph;
 use roadmap::engine::repo::TaskRepo;
-use roadmap::engine::types::TaskStatus;
+use roadmap::engine::types::DerivedStatus;
 
 pub fn handle() -> Result<()> {
     let conn = Db::connect()?;
-    let repo = TaskRepo::new(conn);
+    let repo = TaskRepo::new(&conn);
     let graph = TaskGraph::build(repo.conn())?;
 
-    let all = repo.get_all()?;
-    let done = all.iter().filter(|t| t.status == TaskStatus::Done).count();
+    let counts = graph.status_counts();
+    let head_sha = graph.head_sha();
 
-    println!("{} Roadmap Status", "??".cyan());
-    println!("   Tasks: {}/{} complete", done, all.len());
-    println!("   Graph: {} nodes, {} edges", graph.task_count(), graph.edge_count());
+    println!("{} Roadmap Status", "📊".cyan());
+    println!(
+        "   {} {}/{}",
+        "proven:".green(),
+        counts.proven,
+        counts.total()
+    );
+    if counts.attested > 0 {
+        println!("   {} {}", "attested:".yellow(), counts.attested);
+    }
+    if counts.stale > 0 {
+        println!("   {} {}", "stale:".yellow(), counts.stale);
+    }
+    if counts.broken > 0 {
+        println!("   {} {}", "broken:".red(), counts.broken);
+    }
+    println!("   {} {}", "unproven:".dimmed(), counts.unproven);
+    println!(
+        "   {} {} nodes, {} edges",
+        "graph:".dimmed(),
+        graph.task_count(),
+        graph.edge_count()
+    );
+    println!(
+        "   {} {}",
+        "HEAD:".dimmed(),
+        &head_sha[..7.min(head_sha.len())]
+    );
 
-    print_focus(&repo)?;
+    print_focus(&repo, &head_sha)?;
     print_next(&graph);
 
     Ok(())
 }
 
-fn print_focus(repo: &TaskRepo) -> Result<()> {
+fn print_focus(repo: &TaskRepo<&rusqlite::Connection>, head_sha: &str) -> Result<()> {
     if let Some(id) = repo.get_active_task_id()? {
         if let Some(task) = repo.find_by_id(id)? {
-            println!("\n{} Focus: [{}] {}", "?".yellow(), task.slug.yellow(), task.title);
+            let derived = task.derive_status(head_sha);
+            println!(
+                "\n{} Focus: [{}] {} ({})",
+                "→".yellow(),
+                task.slug.yellow(),
+                task.title,
+                derived.to_string().dimmed()
+            );
             return Ok(());
         }
     }
-    println!("\n{} No active task", "	".dimmed());
+    println!("\n{} No active task", "○".dimmed());
     Ok(())
 }
 
 fn print_next(graph: &TaskGraph) {
     let frontier = graph.get_frontier();
     if !frontier.is_empty() {
-        println!("\n{} Next up:", "".cyan());
+        println!("\n{} Next up:", "🎯".cyan());
         for task in frontier.iter().take(3) {
-            println!("   	 [{}] {}", task.slug.dimmed(), task.title);
+            let derived = task.derive_status(graph.head_sha());
+            println!(
+                "   {} [{}] {} ({})",
+                status_icon(derived),
+                task.slug.dimmed(),
+                task.title,
+                derived.to_string().dimmed()
+            );
         }
     }
 }
+
+fn status_icon(status: DerivedStatus) -> colored::ColoredString {
+    match status {
+        DerivedStatus::Broken => "✗".red(),
+        DerivedStatus::Stale => "⟳".yellow(),
+        DerivedStatus::Unproven => "○".dimmed(),
+        DerivedStatus::Proven => "✓".green(),
+        DerivedStatus::Attested => "◐".yellow(),
+    }
+}
+
 #__SLOPCHOP_END__#
 
 #__SLOPCHOP_FILE__# src/lib.rs
@@ -1983,7 +2401,7 @@ fn main() -> Result<()> {
     match &cli.command {
         Commands::Init => {
             Db::init()?;
-            println!("{} Initialized .roadmap/state.db", "�".green());
+            println!("{} Initialized .roadmap/state.db", "✓".green());
             Ok(())
         }
         Commands::Add { title, blocks, after, test } => {
@@ -1996,6 +2414,7 @@ fn main() -> Result<()> {
         Commands::Status => handlers::status::handle(),
     }
 }
+
 #__SLOPCHOP_END__#
 
 

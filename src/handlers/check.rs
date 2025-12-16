@@ -6,7 +6,7 @@ use roadmap::engine::db::Db;
 use roadmap::engine::graph::TaskGraph;
 use roadmap::engine::repo::TaskRepo;
 use roadmap::engine::runner::{get_git_sha, VerifyRunner};
-use roadmap::engine::types::{DerivedStatus, Proof, Task, TaskStatus};
+use roadmap::engine::types::{Proof, Task, TaskStatus};
 
 pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
     let conn = Db::connect()?;
@@ -17,7 +17,7 @@ pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
     let derived = task.derive_status(&head_sha);
 
     println!(
-        "🔍 Checking: [{}] {} ({})",
+        "?? Checking: [{}] {} ({})",
         task.slug.yellow(),
         task.title,
         derived.to_string().dimmed()
@@ -28,7 +28,7 @@ pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
     }
 
     let Some(test_cmd) = &task.test_cmd else {
-        println!("{} No verification command defined.", "⚠".yellow());
+        println!("{} No verification command defined.", "?".yellow());
         println!("   Use --force --reason \"...\" to mark as ATTESTED");
         return Ok(());
     };
@@ -50,7 +50,7 @@ fn handle_force(
 
     println!(
         "{} Task [{}] marked ATTESTED (not verified)",
-        "⚠".yellow(),
+        "?".yellow(),
         task.slug.yellow()
     );
     println!("   {} \"{}\"", "reason:".dimmed(), reason);
@@ -110,7 +110,7 @@ fn mark_proven(
 
     println!(
         "{} PROVEN! Task [{}] verified",
-        "✓".green(),
+        "�".green(),
         task.slug.green()
     );
     println!(
@@ -140,7 +140,7 @@ fn mark_broken(
 
     println!(
         "{} BROKEN! Task [{}] verification failed",
-        "✗".red(),
+        "?".red(),
         task.slug.red()
     );
     Ok(())
@@ -156,11 +156,11 @@ fn show_unblocked(repo: &TaskRepo<&rusqlite::Connection>, done_id: i64) -> Resul
         .collect();
 
     if !available.is_empty() {
-        println!("\n🎯 Now available:");
+        println!("\n?? Now available:");
         for t in available {
             let status = t.derive_status(graph.head_sha());
             println!(
-                "   ○ [{}] {} ({})",
+                "   	 [{}] {} ({})",
                 t.slug.yellow(),
                 t.title,
                 status.to_string().dimmed()
@@ -168,4 +168,4 @@ fn show_unblocked(repo: &TaskRepo<&rusqlite::Connection>, done_id: i64) -> Resul
         }
     }
     Ok(())
-}
+}

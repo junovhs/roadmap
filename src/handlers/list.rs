@@ -13,7 +13,7 @@ pub fn handle() -> Result<()> {
     let tasks = repo.get_all()?;
     let head_sha = get_git_sha();
 
-    println!("{} All Tasks:", "📋".cyan());
+    println!("{} All Tasks:", "??".cyan());
 
     if tasks.is_empty() {
         println!("   {} No tasks defined yet.", "(empty)".dimmed());
@@ -23,7 +23,7 @@ pub fn handle() -> Result<()> {
     for task in tasks {
         let derived = task.derive_status(&head_sha);
         let icon = status_icon(derived);
-        let test = if task.test_cmd.is_some() { " 🧪" } else { "" };
+        let test = if task.test_cmd.is_some() { " ??" } else { "" };
         println!(
             "   {} [{}] {} ({}){test}",
             icon,
@@ -38,10 +38,10 @@ pub fn handle() -> Result<()> {
 
 fn status_icon(status: DerivedStatus) -> colored::ColoredString {
     match status {
-        DerivedStatus::Unproven => "○".dimmed(),
-        DerivedStatus::Proven => "✓".green(),
-        DerivedStatus::Stale => "⟳".yellow(),
-        DerivedStatus::Broken => "✗".red(),
-        DerivedStatus::Attested => "◐".yellow(),
+        DerivedStatus::Unproven => "	".dimmed(),
+        DerivedStatus::Proven => "�".green(),
+        DerivedStatus::Stale => "?".yellow(),
+        DerivedStatus::Broken => "?".red(),
+        DerivedStatus::Attested => "?".blue(),
     }
-}
+}

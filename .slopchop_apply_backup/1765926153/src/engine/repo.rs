@@ -171,9 +171,6 @@ impl<C: Deref<Target = Connection>> TaskRepo<C> {
 }
 
 /// Converts a database row to a Task.
-///
-/// # Errors
-/// Returns error if row access fails or fields are missing/invalid.
 pub fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
     let status_str: String = row.get(3)?;
     let proof_json: Option<String> = row.get(6)?;

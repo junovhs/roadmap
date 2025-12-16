@@ -38,7 +38,7 @@ fn print_json(tasks: &[&roadmap::engine::types::Task], head_sha: &str) -> Result
 }
 
 fn print_human(tasks: &[&roadmap::engine::types::Task], graph: &TaskGraph) {
-    println!("{} Actionable Tasks (frontier):", "🎯".cyan());
+    println!("{} Actionable Tasks (frontier):", "??".cyan());
 
     if tasks.is_empty() {
         println!(
@@ -64,7 +64,7 @@ fn print_human(tasks: &[&roadmap::engine::types::Task], graph: &TaskGraph) {
             let names: Vec<_> = blocked.iter().map(|t| t.slug.as_str()).collect();
             println!(
                 "      {} {}",
-                "↳ unblocks:".dimmed(),
+                "? unblocks:".dimmed(),
                 names.join(", ").dimmed()
             );
         }
@@ -73,10 +73,10 @@ fn print_human(tasks: &[&roadmap::engine::types::Task], graph: &TaskGraph) {
 
 fn status_icon(status: DerivedStatus) -> colored::ColoredString {
     match status {
-        DerivedStatus::Broken => "✗".red(),
-        DerivedStatus::Stale => "⟳".yellow(),
-        DerivedStatus::Unproven => "○".dimmed(),
-        DerivedStatus::Proven => "✓".green(),
-        DerivedStatus::Attested => "◐".yellow(),
+        DerivedStatus::Broken => "?".red(),
+        DerivedStatus::Stale => "?".yellow(),
+        DerivedStatus::Unproven => "	".dimmed(),
+        DerivedStatus::Proven => "�".green(),
+        DerivedStatus::Attested => "?".blue(),
     }
-}
+}

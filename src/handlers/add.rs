@@ -18,7 +18,7 @@ pub fn handle(
 
     // Start transaction for atomic add + deps + cycle check
     let tx = conn.transaction()?;
-    let repo = TaskRepo::new(&tx);
+    let repo = TaskRepo::new(&*tx);
 
     // Check for duplicate
     if repo.find_by_slug(&slug)?.is_some() {
@@ -41,7 +41,7 @@ pub fn handle(
         repo.link(after_task.task.id, task_id)?;
         println!(
             "   {} [{}] blocks [{}]",
-            "→".cyan(),
+            "".cyan(),
             after_task.task.slug,
             slug
         );
@@ -60,7 +60,7 @@ pub fn handle(
         repo.link(task_id, blocks_task.task.id)?;
         println!(
             "   {} [{}] blocks [{}]",
-            "→".cyan(),
+            "".cyan(),
             slug,
             blocks_task.task.slug
         );
@@ -69,6 +69,6 @@ pub fn handle(
     // Commit only if everything succeeded
     tx.commit()?;
 
-    println!("{} Added task [{}] {}", "✓".green(), slug.yellow(), title);
+    println!("{} Added task [{}] {}", "�".green(), slug.yellow(), title);
     Ok(())
-}
+}

@@ -129,7 +129,6 @@ impl VerifyRunner {
 }
 
 /// Gets current git HEAD SHA.
-#[must_use]
 pub fn get_git_sha() -> String {
     Command::new("git")
         .args(["rev-parse", "HEAD"])

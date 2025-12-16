@@ -1,11 +1,10 @@
 //! Fuzzy Task Resolver: Matches human-friendly names to task IDs.
 
 use super::fuzzy::calculate_score;
-use super::repo::{row_to_task, TaskRepo};
+use super::repo::TaskRepo;
 use super::types::Task;
 use anyhow::{bail, Result};
 use rusqlite::Connection;
-use std::ops::Deref;
 
 pub use super::fuzzy::slugify;
 
@@ -25,14 +24,14 @@ pub enum MatchType {
 }
 
 /// Resolves a query string to a task.
-pub struct TaskResolver<'a, C: Deref<Target = Connection>> {
-    repo: TaskRepo<&'a C>,
+pub struct TaskResolver<'a> {
+    repo: TaskRepo<&'a Connection>,
     strict: bool,
 }
 
-impl<'a, C: Deref<Target = Connection>> TaskResolver<'a, C> {
+impl<'a> TaskResolver<'a> {
     #[must_use]
-    pub fn new(conn: &'a C) -> Self {
+    pub fn new(conn: &'a Connection) -> Self {
         Self {
             repo: TaskRepo::new(conn),
             strict: false,
@@ -40,9 +39,8 @@ impl<'a, C: Deref<Target = Connection>> TaskResolver<'a, C> {
     }
 
     /// Creates a resolver in strict mode (for agents/JSON output).
-    /// In strict mode, fuzzy matching is disabled - only exact matches work.
     #[must_use]
-    pub fn strict(conn: &'a C) -> Self {
+    pub fn strict(conn: &'a Connection) -> Self {
         Self {
             repo: TaskRepo::new(conn),
             strict: true,
@@ -152,4 +150,4 @@ fn format_suggestions_json(candidates: &[ResolveResult]) -> String {
         .map(|c| format!("  {{\"id\": {}, \"slug\": \"{}\"}}", c.task.id, c.task.slug))
         .collect::<Vec<_>>()
         .join("\n")
-}
+}
