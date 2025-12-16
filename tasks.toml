@@ -17,7 +17,7 @@ order = 1
 [[tasks]]
 id = "v011-proof-evidence"
 text = "Store proof evidence {cmd, exit_code, sha, timestamp} on roadmap check"
-status = "pending"
+status = "done"
 section = "v0.1.1"
 order = 0
 

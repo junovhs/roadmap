@@ -1,4 +1,4 @@
-use super::types::{Task, TaskStatus};
+use super::types::{Proof, Task, TaskStatus};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -28,9 +28,8 @@ impl TaskRepo {
             params![slug, title, TaskStatus::Pending.to_string()],
         )
         .context("Failed to insert task")?;
-
-        let id = self.conn.last_insert_rowid();
-        Ok(id)
+        
+        Ok(self.conn.last_insert_rowid())
     }
 
     /// Adds a task with a test command.
@@ -43,7 +42,7 @@ impl TaskRepo {
             params![slug, title, TaskStatus::Pending.to_string(), test_cmd],
         )
         .context("Failed to insert task with test command")?;
-
+        
         Ok(self.conn.last_insert_rowid())
     }
 
@@ -65,19 +64,9 @@ impl TaskRepo {
     /// Returns error if the SELECT fails.
     pub fn get_all(&self) -> Result<Vec<Task>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks"
+            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks"
         )?;
-        let rows = stmt.query_map([], |row| {
-            let status_str: String = row.get(3)?;
-            Ok(Task {
-                id: row.get(0)?,
-                slug: row.get(1)?,
-                title: row.get(2)?,
-                status: TaskStatus::from(status_str),
-                test_cmd: row.get(4)?,
-                created_at: row.get(5)?,
-            })
-        })?;
+        let rows = stmt.query_map([], row_to_task)?;
 
         let mut tasks = Vec::new();
         for task in rows {
@@ -92,19 +81,9 @@ impl TaskRepo {
     /// Returns error if the query fails.
     pub fn find_by_slug(&self, slug: &str) -> Result<Option<Task>> {
         self.conn.query_row(
-            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks WHERE slug = ?1",
+            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks WHERE slug = ?1",
             params![slug],
-            |row| {
-                let status_str: String = row.get(3)?;
-                Ok(Task {
-                    id: row.get(0)?,
-                    slug: row.get(1)?,
-                    title: row.get(2)?,
-                    status: TaskStatus::from(status_str),
-                    test_cmd: row.get(4)?,
-                    created_at: row.get(5)?,
-                })
-            },
+            row_to_task,
         )
         .optional()
         .context("Failed to find task by slug")
@@ -116,19 +95,9 @@ impl TaskRepo {
     /// Returns error if the query fails.
     pub fn find_by_id(&self, id: i64) -> Result<Option<Task>> {
         self.conn.query_row(
-            "SELECT id, slug, title, status, test_cmd, created_at FROM tasks WHERE id = ?1",
+            "SELECT id, slug, title, status, test_cmd, created_at, proof_json FROM tasks WHERE id = ?1",
             params![id],
-            |row| {
-                let status_str: String = row.get(3)?;
-                Ok(Task {
-                    id: row.get(0)?,
-                    slug: row.get(1)?,
-                    title: row.get(2)?,
-                    status: TaskStatus::from(status_str),
-                    test_cmd: row.get(4)?,
-                    created_at: row.get(5)?,
-                })
-            },
+            row_to_task,
         )
         .optional()
         .context("Failed to find task by id")
@@ -142,6 +111,19 @@ impl TaskRepo {
         self.conn.execute(
             "UPDATE tasks SET status = ?1 WHERE id = ?2",
             params![status.to_string(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Saves proof evidence for a task.
+    ///
+    /// # Errors
+    /// Returns error if the UPDATE fails.
+    pub fn save_proof(&self, id: i64, proof: &Proof) -> Result<()> {
+        let json = serde_json::to_string(proof)?;
+        self.conn.execute(
+            "UPDATE tasks SET proof_json = ?1 WHERE id = ?2",
+            params![json, id],
         )?;
         Ok(())
     }
@@ -177,3 +159,19 @@ impl TaskRepo {
         }
     }
 }
+
+fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
+    let status_str: String = row.get(3)?;
+    let proof_json: Option<String> = row.get(6)?;
+    let proof = proof_json.and_then(|j| serde_json::from_str(&j).ok());
+
+    Ok(Task {
+        id: row.get(0)?,
+        slug: row.get(1)?,
+        title: row.get(2)?,
+        status: TaskStatus::from(status_str),
+        test_cmd: row.get(4)?,
+        created_at: row.get(5)?,
+        proof,
+    })
+}

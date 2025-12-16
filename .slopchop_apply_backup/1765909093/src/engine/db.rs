@@ -43,8 +43,11 @@ impl Db {
 
     /// Configures `SQLite` connection for integrity and concurrency.
     fn configure(conn: &Connection) -> Result<()> {
+        // Enforce foreign key constraints
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        // WAL mode for better concurrency (multi-process/agent safe)
         conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        // Wait up to 5 seconds if DB is locked
         conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
         Ok(())
     }
@@ -59,20 +62,11 @@ impl Db {
                 status TEXT NOT NULL,
                 test_cmd TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                context_files TEXT,
-                proof_json TEXT
+                context_files TEXT
             )",
             [],
         )
         .context("Failed to create tasks table")?;
-
-        // Migration: add proof_json if missing (for existing DBs)
-        let has_proof: bool = conn
-            .prepare("SELECT proof_json FROM tasks LIMIT 1")
-            .is_ok();
-        if !has_proof {
-            let _ = conn.execute("ALTER TABLE tasks ADD COLUMN proof_json TEXT", []);
-        }
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS dependencies (

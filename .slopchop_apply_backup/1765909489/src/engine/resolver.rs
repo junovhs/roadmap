@@ -134,7 +134,6 @@ fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
         status: TaskStatus::from(status_str),
         test_cmd: row.get(4)?,
         created_at: row.get(5)?,
-        proof: None,
     })
 }
 

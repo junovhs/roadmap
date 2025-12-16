@@ -24,7 +24,7 @@ order = 0
 [[tasks]]
 id = "v011-db-hardening"
 text = "Enable foreign_keys, WAL mode, busy_timeout in SQLite connection"
-status = "pending"
+status = "done"
 section = "v0.1.1"
 order = 1
 
@@ -45,7 +45,7 @@ order = 3
 [[tasks]]
 id = "v011-rename-frontier"
 text = "Rename get_critical_path() to get_frontier() for accuracy"
-status = "pending"
+status = "done"
 section = "v0.1.1"
 order = 4
 

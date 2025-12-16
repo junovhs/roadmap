@@ -33,6 +33,7 @@ impl TaskGraph {
         let mut graph = DiGraphMap::new();
         let mut task_map = HashMap::new();
 
+        // 1. Load Nodes
         let mut stmt = conn.prepare(
             "SELECT id, slug, title, status, test_cmd, created_at FROM tasks"
         )?;
@@ -45,7 +46,6 @@ impl TaskGraph {
                 status: TaskStatus::from(status_str),
                 test_cmd: row.get(4)?,
                 created_at: row.get(5)?,
-                proof: None,
             })
         })?;
 
@@ -55,6 +55,7 @@ impl TaskGraph {
             task_map.insert(task.id, task);
         }
 
+        // 2. Load Edges (blocker -> blocked)
         let mut stmt = conn.prepare("SELECT blocker_id, blocked_id FROM dependencies")?;
         let edge_rows = stmt.query_map([], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
@@ -69,6 +70,8 @@ impl TaskGraph {
     }
 
     /// Checks if adding an edge would create a cycle.
+    ///
+    /// Uses a temporary graph to test acyclicity before commit.
     #[must_use]
     pub fn would_create_cycle(&self, from_id: i64, to_id: i64) -> bool {
         let mut test_graph = self.graph.clone();
@@ -106,10 +109,12 @@ impl TaskGraph {
             }
         }
 
+        // Sort by ID to keep it deterministic
         frontier.sort_by_key(|t| t.id);
         frontier
     }
 
+    /// Checks if a task is blocked by any incomplete dependencies.
     fn is_task_blocked(&self, task_id: i64) -> bool {
         let blockers = self.graph.neighbors_directed(
             task_id,
@@ -174,10 +179,13 @@ mod tests {
         graph.graph.add_node(2);
         graph.graph.add_node(3);
 
+        // 1 -> 2 -> 3 (no cycle)
         graph.graph.add_edge(1, 2, ());
         graph.graph.add_edge(2, 3, ());
 
         assert!(graph.validate().is_ok());
+
+        // Adding 3 -> 1 would create a cycle
         assert!(graph.would_create_cycle(3, 1));
     }
 }
