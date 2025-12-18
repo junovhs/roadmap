@@ -1,6 +1,7 @@
 //! Verification Runner: Executes shell commands to verify task completion.
 
 use anyhow::{bail, Context, Result};
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
@@ -60,7 +61,7 @@ impl VerifyRunner {
     /// Executes a shell command and returns the result.
     ///
     /// # Errors
-    /// Returns error if command fails to spawn.
+    /// Returns error if command fails to spawn or times out.
     pub fn run(&self, cmd: &str) -> Result<VerifyResult> {
         if cmd.trim().is_empty() {
             bail!("Empty verification command");
@@ -83,25 +84,35 @@ impl VerifyRunner {
             .spawn()
             .context("Failed to spawn verification command")?;
 
-        // Enforce Timeout logic
+        // Enforce Timeout logic (Fixes Double Wait & Clippy)
         let status_code = if let Some(status) = child.wait_timeout(timeout).context("Failed to wait")? {
             status.code()
         } else {
             // Timeout occurred, kill the child
             let _ = child.kill();
+            // Wait to clean up the zombie process
+            let _ = child.wait(); 
             bail!("Verification timed out after {}s", self.config.timeout_secs);
         };
 
         let duration = start.elapsed();
         
-        // Capture output after wait
-        let output = child.wait_with_output().context("Failed to capture output")?;
+        // Manual Output Capture (Fixes Double Wait Bug)
+        let mut stdout_str = String::new();
+        let mut stderr_str = String::new();
+
+        if let Some(mut out) = child.stdout {
+            let _ = out.read_to_string(&mut stdout_str);
+        }
+        if let Some(mut err) = child.stderr {
+            let _ = err.read_to_string(&mut stderr_str);
+        }
 
         Ok(VerifyResult {
             success: status_code == Some(0),
             exit_code: status_code,
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            stdout: stdout_str,
+            stderr: stderr_str,
             duration,
         })
     }

@@ -7,6 +7,7 @@ use anyhow::Result;
 use petgraph::algo::is_cyclic_directed;
 use petgraph::graphmap::DiGraphMap;
 use rusqlite::Connection;
+use serde::Serialize;
 use std::collections::HashMap;
 
 pub struct TaskGraph {
@@ -105,5 +106,38 @@ impl TaskGraph {
             .neighbors_directed(id, petgraph::Direction::Incoming)
             .filter_map(|i| self.tasks.get(&i))
             .collect()
+    }
+
+    /// Calculates status counts for the entire graph.
+    #[must_use]
+    pub fn status_counts(&self) -> StatusCounts {
+        let mut counts = StatusCounts::default();
+        for task in self.tasks.values() {
+            match task.derive_status(&self.context) {
+                DerivedStatus::Unproven => counts.unproven += 1,
+                DerivedStatus::Proven => counts.proven += 1,
+                DerivedStatus::Stale => counts.stale += 1,
+                DerivedStatus::Broken => counts.broken += 1,
+                DerivedStatus::Attested => counts.attested += 1,
+            }
+        }
+        counts
+    }
+}
+
+/// Aggregate counts of tasks by status.
+#[derive(Debug, Default, Serialize)]
+pub struct StatusCounts {
+    pub unproven: usize,
+    pub proven: usize,
+    pub stale: usize,
+    pub broken: usize,
+    pub attested: usize,
+}
+
+impl StatusCounts {
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.unproven + self.proven + self.stale + self.broken + self.attested
     }
 }

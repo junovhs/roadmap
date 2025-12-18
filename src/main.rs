@@ -33,7 +33,10 @@ enum Commands {
         json: bool,
     },
     /// List all tasks
-    List,
+    List {
+        #[arg(long)]
+        json: bool,
+    },
     /// Set active task
     Do {
         task: String,
@@ -51,7 +54,10 @@ enum Commands {
         reason: Option<String>,
     },
     /// Show current status
-    Status,
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     /// Explain the status of a specific task
     Why {
         task: String,
@@ -74,8 +80,8 @@ fn main() -> Result<()> {
             dispatch_write_ops(cli.command)
         }
         Commands::Next { .. }
-        | Commands::List
-        | Commands::Status
+        | Commands::List { .. }
+        | Commands::Status { .. }
         | Commands::Why { .. }
         | Commands::Stale
         | Commands::History { .. } => dispatch_read_ops(cli.command),
@@ -107,8 +113,8 @@ fn dispatch_write_ops(cmd: Commands) -> Result<()> {
 fn dispatch_read_ops(cmd: Commands) -> Result<()> {
     match cmd {
         Commands::Next { json } => handlers::next::handle(json),
-        Commands::List => handlers::list::handle(),
-        Commands::Status => handlers::status::handle(),
+        Commands::List { json } => handlers::list::handle(json),
+        Commands::Status { json } => handlers::status::handle(json),
         Commands::Why { task } => handlers::why::handle(&task),
         Commands::Stale => handlers::stale::handle(),
         Commands::History { limit } => handlers::history::handle(limit),
