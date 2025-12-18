@@ -7,7 +7,7 @@ use roadmap::engine::db::Db;
 use roadmap::engine::graph::TaskGraph;
 use roadmap::engine::repo::{ProofRepo, TaskRepo};
 use roadmap::engine::runner::VerifyRunner;
-use roadmap::engine::types::{Proof, Task, TaskStatus};
+use roadmap::engine::types::{Proof, ProofOutcome, Task, TaskStatus};
 
 /// Runs verification for the active task.
 ///
@@ -17,9 +17,6 @@ pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
     let context = RepoContext::new()?;
 
     // LAW OF HYGIENE: The Dirty Lie
-    // You cannot prove something is true about a commit if you have uncommitted changes.
-    // The proof would be recorded against HEAD, but the code verified was HEAD + Dirty.
-    // If you revert the dirty changes, the proof becomes a lie.
     if context.is_dirty {
         bail!(
             "Repository is dirty. You must commit your changes before verifying.\n   {}", 
@@ -108,10 +105,14 @@ fn mark_proven(
     result: &roadmap::engine::runner::VerifyResult,
     git_sha: &str,
 ) -> Result<()> {
-    let duration_ms = result.duration.as_millis() as u64;
-    let exit_code = result.exit_code.unwrap_or(0);
+    let outcome = ProofOutcome {
+        exit_code: result.exit_code.unwrap_or(0),
+        duration_ms: result.duration.as_millis() as u64,
+        stdout: result.stdout.clone(),
+        stderr: result.stderr.clone(),
+    };
 
-    let proof = Proof::new(cmd, exit_code, git_sha, duration_ms);
+    let proof = Proof::new(cmd, git_sha, outcome);
     let proof_repo = ProofRepo::new(repo.conn());
     proof_repo.save(task.id, &proof)?;
     
@@ -133,10 +134,14 @@ fn mark_broken(
     result: &roadmap::engine::runner::VerifyResult,
     git_sha: &str,
 ) -> Result<()> {
-    let duration_ms = result.duration.as_millis() as u64;
-    let exit_code = result.exit_code.unwrap_or(1);
+    let outcome = ProofOutcome {
+        exit_code: result.exit_code.unwrap_or(1),
+        duration_ms: result.duration.as_millis() as u64,
+        stdout: result.stdout.clone(),
+        stderr: result.stderr.clone(),
+    };
 
-    let proof = Proof::new(cmd, exit_code, git_sha, duration_ms);
+    let proof = Proof::new(cmd, git_sha, outcome);
     let proof_repo = ProofRepo::new(conn);
     proof_repo.save(task.id, &proof)?;
 

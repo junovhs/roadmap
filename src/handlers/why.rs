@@ -57,12 +57,8 @@ fn print_explanation(status: DerivedStatus, proof: Option<&Proof>, head: &str) {
         DerivedStatus::Stale => explain_stale(proof, head),
         DerivedStatus::Attested => explain_attested(proof),
         DerivedStatus::Proven => explain_proven(proof),
-        DerivedStatus::Unproven => {
-            println!("{} No proof has ever been recorded for this task.", "reason:".yellow());
-        }
-        DerivedStatus::Broken => {
-            println!("{} The last verification attempt failed.", "reason:".red());
-        }
+        DerivedStatus::Unproven => explain_unproven(),
+        DerivedStatus::Broken => explain_broken(proof),
     }
 }
 
@@ -89,6 +85,22 @@ fn explain_proven(proof: Option<&Proof>) {
             "reason:".green(),
             &p.git_sha[..7.min(p.git_sha.len())]
         );
+    }
+}
+
+fn explain_unproven() {
+    println!("{} No proof has ever been recorded for this task.", "reason:".yellow());
+}
+
+fn explain_broken(proof: Option<&Proof>) {
+    println!("{} The last verification attempt failed.", "reason:".red());
+    if let Some(p) = proof {
+        if !p.stderr.is_empty() {
+            println!("\n{}:", "stderr".red());
+            for line in p.stderr.lines().take(5) {
+                println!("  {}", line.dimmed());
+            }
+        }
     }
 }
 

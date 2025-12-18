@@ -106,26 +106,28 @@ impl Task {
             return DerivedStatus::Broken;
         }
 
-        // SHA Matching Logic (The Core of Smart Decay)
-        let sha_match = sha_matches(&proof.git_sha, context.head_sha());
-        
-        if !sha_match {
-            // If Global SHA changed, we check if it matters for this task.
+        if !sha_matches(&proof.git_sha, context.head_sha()) {
+            // Global mismatch. Check scopes for smart decay.
             if self.scopes.is_empty() {
-                // No scope defined -> Global Decay (Safe Default)
                 return DerivedStatus::Stale;
             }
 
             if context.has_changes(&proof.git_sha, &self.scopes) {
-                // Scoped files changed -> Stale
                 return DerivedStatus::Stale;
             }
-            
-            // HEAD moved, but scoped files are untouched -> Still Proven!
+            // Scopes match (no changes in relevant files), so we preserve Proven status.
         }
 
         DerivedStatus::Proven
     }
+}
+
+/// Helper struct to group execution results for Proof creation.
+pub struct ProofOutcome {
+    pub exit_code: i32,
+    pub duration_ms: u64,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,19 +138,25 @@ pub struct Proof {
     pub timestamp: String,
     pub duration_ms: u64,
     pub attested_reason: Option<String>,
+    #[serde(default)]
+    pub stdout: String,
+    #[serde(default)]
+    pub stderr: String,
 }
 
 impl Proof {
-    /// Creates a new machine-verified proof.
+    /// Creates a new machine-verified proof with evidence logs.
     #[must_use]
-    pub fn new(cmd: &str, exit_code: i32, git_sha: &str, duration_ms: u64) -> Self {
+    pub fn new(cmd: &str, git_sha: &str, outcome: ProofOutcome) -> Self {
         Self {
             cmd: cmd.to_string(),
-            exit_code,
+            exit_code: outcome.exit_code,
             git_sha: git_sha.to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
-            duration_ms,
+            duration_ms: outcome.duration_ms,
             attested_reason: None,
+            stdout: outcome.stdout,
+            stderr: outcome.stderr,
         }
     }
 
@@ -162,14 +170,16 @@ impl Proof {
             timestamp: chrono::Utc::now().to_rfc3339(),
             duration_ms: 0,
             attested_reason: Some(reason.to_string()),
+            stdout: String::new(),
+            stderr: String::new(),
         }
     }
 }
 
+/// Strict SHA matching. No fuzzy logic. Truth is precise.
 fn sha_matches(stored: &str, current: &str) -> bool {
     if stored == "unknown" || current == "unknown" {
-        return true;
+        return false; // Unknowns can't be trusted in strict mode
     }
-    let len = stored.len().min(current.len()).min(7);
-    len > 0 && stored[..len] == current[..len]
+    stored == current
 }

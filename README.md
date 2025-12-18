@@ -3,7 +3,7 @@
 > **A proof-carrying roadmap.**
 > A DAG of claims whose completion is operationally trustworthy.
 >
-> Said simply: it's a roadmap for your project that **updates itself based on what is and isn't true.**
+> Said simply: it's a roadmap for your project that updates itself based on what is and isn't true.
 
 ---
 
@@ -13,6 +13,8 @@ Roadmap isn't a todo list; it's a state machine. Here is the exact lifecycle of 
 
 ### 1. Define the Reality (Setup)
 You define the work and the topology (dependencies). This replaces writing a `TODO.md` or filling out JIRA tickets.
+
+> **💡 AI Pro-Tip:** Writing these commands manually can be verbose. Just paste your `SPEC.md` or feature list into an LLM and say: *"Generate the `roadmap add` commands for this, including dependencies and file scopes."* It handles the graph topology perfectly.
 
 ```bash
 roadmap init
@@ -86,6 +88,18 @@ Roadmap trusts the **Proof Audit Log**, not your memory.
 Codebases change. Roadmap knows *what* changed.
 - **Global Decay:** If a task has no scope, *any* commit marks it STALE. (Safe default).
 - **Smart Decay:** If a task has a `--scope` (e.g., `src/auth/**`), it stays PROVEN unless the changes touch those files.
+
+---
+
+## Threat Model & Non-Goals
+
+**Roadmap is a local developer tool, not a cryptographic ledger.**
+
+1.  **Evidence, not Proofs:** We use the term "Proof" colloquially. Technically, we store *Evidence* (a record that a command exited 0). We do not provide cryptographic signatures or reproducible builds.
+2.  **Arbitrary Execution:** `roadmap check` executes shell commands defined in the database.
+    *   **Do not** initialize Roadmap from an untrusted database source.
+    *   **Do not** run `roadmap check` on a shared repository without auditing the `test_cmd` fields first.
+3.  **Local Trust:** The system trusts that the local `git` command is not compromised and that the SQLite file has not been tampered with by other processes.
 
 ---
 

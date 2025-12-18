@@ -42,7 +42,6 @@ impl Db {
         let conn = Connection::open(db_path).context("Failed to open database")?;
         
         Self::configure(&conn)?;
-        // Ensure migrations run on every connection to handle schema updates (e.g. v0.3.0 scopes)
         Self::migrate(&conn)?;
         
         Ok(conn)
@@ -97,6 +96,17 @@ impl Db {
             [],
         )?;
 
+        // Migration: Add stdout/stderr to proofs if missing (v0.3.1)
+        let has_logs: bool = conn
+            .prepare("SELECT stdout FROM proofs LIMIT 1")
+            .is_ok();
+        
+        if !has_logs {
+            // We use default empty string for existing records
+            let _ = conn.execute("ALTER TABLE proofs ADD COLUMN stdout TEXT DEFAULT ''", []);
+            let _ = conn.execute("ALTER TABLE proofs ADD COLUMN stderr TEXT DEFAULT ''", []);
+        }
+
         conn.execute(
             "CREATE TABLE IF NOT EXISTS dependencies (
                 blocker_id INTEGER,
@@ -118,4 +128,4 @@ impl Db {
 
         Ok(())
     }
-}// Bump for smart decay test
+}
