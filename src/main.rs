@@ -55,6 +55,12 @@ enum Commands {
     },
     /// Scan for invalidated (stale) proofs
     Stale,
+    /// Show chronological verification history
+    History {
+        /// Number of entries to show
+        #[arg(long, default_value = "20")]
+        limit: usize,
+    },
 }
 
 fn main() -> Result<()> {
@@ -68,7 +74,8 @@ fn main() -> Result<()> {
         | Commands::List
         | Commands::Status
         | Commands::Why { .. }
-        | Commands::Stale => dispatch_read_ops(cli.command),
+        | Commands::Stale 
+        | Commands::History { .. } => dispatch_read_ops(cli.command),
     }
 }
 
@@ -99,6 +106,7 @@ fn dispatch_read_ops(cmd: Commands) -> Result<()> {
         Commands::Status => handlers::status::handle(),
         Commands::Why { task } => handlers::why::handle(&task),
         Commands::Stale => handlers::stale::handle(),
+        Commands::History { limit } => handlers::history::handle(limit),
         _ => unreachable!("Invalid read command dispatch"),
     }
 }

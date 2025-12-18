@@ -156,6 +156,39 @@ impl<'a> TaskRepo<'a> {
         Ok(proofs)
     }
 
+    /// Retrieves global proof history joined with task slugs.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn get_global_history(&self, limit: usize) -> Result<Vec<(String, Proof)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.slug, p.cmd, p.exit_code, p.git_sha, p.duration_ms, p.timestamp, p.attested_reason 
+             FROM proofs p 
+             JOIN tasks t ON p.task_id = t.id 
+             ORDER BY p.timestamp DESC 
+             LIMIT ?1"
+        )?;
+
+        let rows = stmt.query_map(params![limit], |row| {
+            let slug: String = row.get(0)?;
+            let proof = Proof {
+                cmd: row.get(1)?,
+                exit_code: row.get(2)?,
+                git_sha: row.get(3)?,
+                duration_ms: row.get(4)?,
+                timestamp: row.get(5)?,
+                attested_reason: row.get(6)?,
+            };
+            Ok((slug, proof))
+        })?;
+
+        let mut history = Vec::new();
+        for item in rows {
+            history.push(item?);
+        }
+        Ok(history)
+    }
+
     /// Sets the active task in global state.
     ///
     /// # Errors
