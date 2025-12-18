@@ -1,14 +1,19 @@
 //! Repository Context: The oracle for repo state and file changes.
 
 use anyhow::Result;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::process::Command;
 
 /// Encapsulates the state of the git repository.
 ///
-/// Handles caching `git diff` operations to determine scoped staleness efficiently.
+/// Includes a memoization cache to prevent redundant `git diff` calls
+/// when multiple tasks share the same scope or proof SHA.
 pub struct RepoContext {
     pub head_sha: String,
     pub is_dirty: bool,
+    // Memoization: (since_sha + scopes_key) -> bool
+    cache: RefCell<HashMap<String, bool>>,
 }
 
 impl RepoContext {
@@ -19,7 +24,23 @@ impl RepoContext {
     pub fn new() -> Result<Self> {
         let head_sha = get_git_sha();
         let is_dirty = check_if_dirty();
-        Ok(Self { head_sha, is_dirty })
+        Ok(Self { 
+            head_sha, 
+            is_dirty,
+            cache: RefCell::new(HashMap::new()),
+        })
+    }
+
+    /// Creates a context from a known SHA (useful for read-only views).
+    ///
+    /// Initializes `is_dirty` to false and an empty cache.
+    #[must_use]
+    pub fn from_sha(head_sha: String) -> Self {
+        Self {
+            head_sha,
+            is_dirty: false,
+            cache: RefCell::new(HashMap::new()),
+        }
     }
 
     /// Returns the current HEAD SHA.
@@ -36,16 +57,32 @@ impl RepoContext {
     #[must_use]
     pub fn has_changes(&self, since_sha: &str, scopes: &[String]) -> bool {
         if scopes.is_empty() {
-            return true; // No scope implies global sensitivity
+            return true; // Global sensitivity
         }
 
-        // If SHAs match, obviously no changes.
         if since_sha == self.head_sha {
             return false;
         }
 
-        // git diff --quiet <old> HEAD -- <paths...>
-        // Returns 0 if no changes, 1 if changes.
+        // Create a unique key for the cache: "sha|scope1|scope2"
+        let mut key_parts = vec![since_sha.to_string()];
+        key_parts.extend_from_slice(scopes);
+        let key = key_parts.join("|");
+
+        // Check Cache
+        if let Some(&cached) = self.cache.borrow().get(&key) {
+            return cached;
+        }
+
+        // Cache Miss: Run Git
+        let has_change = Self::run_git_diff(since_sha, scopes);
+        
+        // Store Result
+        self.cache.borrow_mut().insert(key, has_change);
+        has_change
+    }
+
+    fn run_git_diff(since_sha: &str, scopes: &[String]) -> bool {
         let mut cmd = Command::new("git");
         cmd.arg("diff")
            .arg("--quiet")
@@ -58,8 +95,8 @@ impl RepoContext {
         }
 
         match cmd.status() {
-            Ok(status) => !status.success(), // success (0) means NO changes
-            Err(_) => true, // If git fails, assume the worst (Stale)
+            Ok(status) => !status.success(), 
+            Err(_) => true, 
         }
     }
 }
@@ -74,9 +111,6 @@ fn get_git_sha() -> String {
 }
 
 fn check_if_dirty() -> bool {
-    // git status --porcelain
-    // Prints nothing if clean. Prints lines if dirty.
-    // If git command fails, we default to true (safe side).
     match Command::new("git")
         .arg("status")
         .arg("--porcelain")

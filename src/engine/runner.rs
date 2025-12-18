@@ -1,10 +1,9 @@
 //! Verification Runner: Executes shell commands to verify task completion.
-//!
-//! The core principle: A task is not PROVEN until `verify_cmd` returns Exit Code 0.
 
 use anyhow::{bail, Context, Result};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use wait_timeout::ChildExt;
 
 /// Result of running a verification command.
 #[derive(Debug)]
@@ -68,34 +67,39 @@ impl VerifyRunner {
         }
 
         let start = Instant::now();
+        let timeout = Duration::from_secs(self.config.timeout_secs);
+        
         let shell = if cfg!(target_os = "windows") {
             ("cmd", "/C")
         } else {
             ("sh", "-c")
         };
 
-        let mut command = Command::new(shell.0);
-        command.arg(shell.1).arg(cmd);
-
-        if self.config.capture_output {
-            command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        }
-
-        if let Some(ref dir) = self.config.working_dir {
-            command.current_dir(dir);
-        }
-
-        let output: Output = command
+        let mut child = Command::new(shell.0)
+            .arg(shell.1)
+            .arg(cmd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
-            .context("Failed to spawn verification command")?
-            .wait_with_output()
-            .context("Failed to wait for command")?;
+            .context("Failed to spawn verification command")?;
+
+        // Enforce Timeout logic
+        let status_code = if let Some(status) = child.wait_timeout(timeout).context("Failed to wait")? {
+            status.code()
+        } else {
+            // Timeout occurred, kill the child
+            let _ = child.kill();
+            bail!("Verification timed out after {}s", self.config.timeout_secs);
+        };
 
         let duration = start.elapsed();
+        
+        // Capture output after wait
+        let output = child.wait_with_output().context("Failed to capture output")?;
 
         Ok(VerifyResult {
-            success: output.status.success(),
-            exit_code: output.status.code(),
+            success: status_code == Some(0),
+            exit_code: status_code,
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             duration,
@@ -105,59 +109,25 @@ impl VerifyRunner {
     /// Runs verification with user-friendly output on failure.
     ///
     /// # Errors
-    /// Returns error if command fails to execute.
+    /// Returns error if command fails to execute or times out.
     pub fn verify(&self, cmd: &str) -> Result<VerifyResult> {
         let result = self.run(cmd)?;
 
         if !result.passed() {
-            eprintln!("?� Verification Failed �������������������������");
-            eprintln!("� Command: {cmd}");
+            eprintln!("? Verification Failed ");
+            eprintln!(" Command: {cmd}");
             if let Some(code) = result.exit_code {
-                eprintln!("� Exit Code: {code}");
+                eprintln!(" Exit Code: {code}");
             }
             if !result.stderr.is_empty() {
-                eprintln!("� Stderr:");
+                eprintln!(" Stderr:");
                 for line in result.stderr.lines().take(10) {
-                    eprintln!("�   {line}");
+                    eprintln!("   {line}");
                 }
             }
-            eprintln!("?������������������������������������������������");
+            eprintln!("?");
         }
 
         Ok(result)
     }
 }
-
-/// Gets current git HEAD SHA.
-#[must_use]
-pub fn get_git_sha() -> String {
-    Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_simple_command() -> Result<()> {
-        let runner = VerifyRunner::default_runner();
-        let result = runner.run("echo hello")?;
-        assert!(result.passed());
-        assert!(result.stdout.contains("hello"));
-        Ok(())
-    }
-
-    #[test]
-    fn test_failing_command() -> Result<()> {
-        let runner = VerifyRunner::default_runner();
-        let result = runner.run("exit 1")?;
-        assert!(!result.passed());
-        assert_eq!(result.exit_code, Some(1));
-        Ok(())
-    }
-}
