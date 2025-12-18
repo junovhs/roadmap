@@ -2,10 +2,11 @@
 
 use anyhow::{bail, Result};
 use colored::Colorize;
+use roadmap::engine::context::RepoContext;
 use roadmap::engine::db::Db;
 use roadmap::engine::graph::TaskGraph;
-use roadmap::engine::repo::TaskRepo;
-use roadmap::engine::runner::{get_git_sha, VerifyRunner};
+use roadmap::engine::repo::{ProofRepo, TaskRepo};
+use roadmap::engine::runner::VerifyRunner;
 use roadmap::engine::types::{Proof, Task, TaskStatus};
 
 /// Runs verification for the active task.
@@ -15,10 +16,10 @@ use roadmap::engine::types::{Proof, Task, TaskStatus};
 pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
     let conn = Db::connect()?;
     let repo = TaskRepo::new(&conn);
-    let head_sha = get_git_sha();
+    let context = RepoContext::new()?;
 
     let task = get_active_task(&repo)?;
-    let derived = task.derive_status(&head_sha);
+    let derived = task.derive_status(&context);
 
     println!(
         "🔍 Checking: [{}] {} ({})",
@@ -28,7 +29,7 @@ pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
     );
 
     if force {
-        return handle_force(&repo, &task, reason, &head_sha);
+        return handle_force(&repo, &task, reason, context.head_sha());
     }
 
     let Some(test_cmd) = &task.test_cmd else {
@@ -37,7 +38,7 @@ pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
         return Ok(());
     };
 
-    run_verification(&repo, &task, test_cmd, &head_sha)
+    run_verification(&repo, &task, test_cmd, context.head_sha())
 }
 
 fn handle_force(
@@ -48,7 +49,10 @@ fn handle_force(
 ) -> Result<()> {
     let reason = reason.unwrap_or("Manual attestation");
     let proof = Proof::attested(reason, git_sha);
-    repo.save_proof(task.id, &proof)?;
+    
+    let proof_repo = ProofRepo::new(repo.conn());
+    proof_repo.save(task.id, &proof)?;
+    
     repo.update_status(task.id, TaskStatus::Attested)?;
 
     println!(
@@ -80,7 +84,7 @@ fn run_verification(
     if result.passed() {
         mark_proven(repo, task, test_cmd, &result, head_sha)
     } else {
-        mark_broken(repo, task, test_cmd, &result, head_sha)
+        mark_broken(repo.conn(), task, test_cmd, &result, head_sha)
     }
 }
 
@@ -96,7 +100,9 @@ fn mark_proven(
     let exit_code = result.exit_code.unwrap_or(0);
 
     let proof = Proof::new(cmd, exit_code, git_sha, duration_ms);
-    repo.save_proof(task.id, &proof)?;
+    let proof_repo = ProofRepo::new(repo.conn());
+    proof_repo.save(task.id, &proof)?;
+    
     repo.update_status(task.id, TaskStatus::Done)?;
 
     println!(
@@ -109,7 +115,7 @@ fn mark_proven(
 
 #[allow(clippy::cast_possible_truncation)]
 fn mark_broken(
-    repo: &TaskRepo<'_>,
+    conn: &rusqlite::Connection,
     task: &Task,
     cmd: &str,
     result: &roadmap::engine::runner::VerifyResult,
@@ -119,7 +125,8 @@ fn mark_broken(
     let exit_code = result.exit_code.unwrap_or(1);
 
     let proof = Proof::new(cmd, exit_code, git_sha, duration_ms);
-    repo.save_proof(task.id, &proof)?;
+    let proof_repo = ProofRepo::new(conn);
+    proof_repo.save(task.id, &proof)?;
 
     println!(
         "{} BROKEN! Task [{}] verification failed",
@@ -133,8 +140,6 @@ fn show_unblocked(repo: &TaskRepo<'_>, done_id: i64) -> Result<()> {
     let graph = TaskGraph::build(repo.conn())?;
     let frontier = graph.get_frontier();
     
-    // Only show if the current task completion actually opened something new
-    // and exclude the task we just finished if it's still in frontier (e.g. Broken)
     let available: Vec<_> = frontier
         .into_iter()
         .filter(|t| t.id != done_id)

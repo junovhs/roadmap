@@ -16,6 +16,7 @@ pub fn handle(
     blocks: Option<&str>,
     after: Option<&str>,
     test_cmd: Option<&str>,
+    scopes: Option<Vec<String>>,
 ) -> Result<()> {
     let mut conn = Db::connect()?;
     let slug = slugify(title);
@@ -28,6 +29,12 @@ pub fn handle(
     }
 
     let task_id = repo.add(&slug, title, test_cmd)?;
+
+    if let Some(scope_list) = scopes {
+        for scope in scope_list {
+            repo.add_scope(task_id, &scope)?;
+        }
+    }
 
     if let Some(after_ref) = after {
         let resolver = TaskResolver::new(&tx);

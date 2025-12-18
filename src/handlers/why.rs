@@ -2,10 +2,10 @@
 
 use anyhow::Result;
 use colored::Colorize;
+use roadmap::engine::context::RepoContext;
 use roadmap::engine::db::Db;
-use roadmap::engine::repo::TaskRepo;
+use roadmap::engine::repo::ProofRepo;
 use roadmap::engine::resolver::TaskResolver;
-use roadmap::engine::runner::get_git_sha;
 use roadmap::engine::types::{DerivedStatus, Proof};
 
 /// Explains the status of a task and shows its audit log.
@@ -14,15 +14,16 @@ use roadmap::engine::types::{DerivedStatus, Proof};
 /// Returns error if task resolution or DB query fails.
 pub fn handle(task_ref: &str) -> Result<()> {
     let conn = Db::connect()?;
-    let repo = TaskRepo::new(&conn);
-    let head_sha = get_git_sha();
+    let proof_repo = ProofRepo::new(&conn);
+    let context = RepoContext::new()?;
+    let head_sha = context.head_sha();
 
     let resolver = TaskResolver::new(&conn);
     let result = resolver.resolve(task_ref)?;
     let task = result.task;
 
-    let derived = task.derive_status(&head_sha);
-    let history = repo.get_proof_history(task.id)?;
+    let derived = task.derive_status(&context);
+    let history = proof_repo.get_history(task.id)?;
 
     println!(
         "{} [{}] {}",
@@ -34,7 +35,7 @@ pub fn handle(task_ref: &str) -> Result<()> {
     println!("   Repo:    {}", head_sha.dimmed());
     println!();
 
-    print_explanation(derived, task.proof.as_ref(), &head_sha);
+    print_explanation(derived, task.proof.as_ref(), head_sha);
     println!();
     print_history(&history);
 

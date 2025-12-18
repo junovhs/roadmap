@@ -69,6 +69,16 @@ impl Db {
         )?;
 
         conn.execute(
+            "CREATE TABLE IF NOT EXISTS task_scopes (
+                id INTEGER PRIMARY KEY,
+                task_id INTEGER NOT NULL,
+                glob TEXT NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES tasks(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS proofs (
                 id INTEGER PRIMARY KEY,
                 task_id INTEGER NOT NULL,

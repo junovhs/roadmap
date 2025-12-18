@@ -3,7 +3,7 @@
 use anyhow::Result;
 use colored::Colorize;
 use roadmap::engine::db::Db;
-use roadmap::engine::repo::TaskRepo;
+use roadmap::engine::repo::ProofRepo;
 
 /// Displays the global verification history.
 ///
@@ -11,9 +11,9 @@ use roadmap::engine::repo::TaskRepo;
 /// Returns error if database query fails.
 pub fn handle(limit: usize) -> Result<()> {
     let conn = Db::connect()?;
-    let repo = TaskRepo::new(&conn);
+    let proof_repo = ProofRepo::new(&conn);
     
-    let history = repo.get_global_history(limit)?;
+    let history = proof_repo.get_global_history(limit)?;
 
     println!("{} Project History (last {})", "📜".cyan(), limit);
     println!();

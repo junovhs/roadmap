@@ -2,11 +2,11 @@
 
 use anyhow::{bail, Result};
 use colored::Colorize;
+use roadmap::engine::context::RepoContext;
 use roadmap::engine::db::Db;
 use roadmap::engine::graph::TaskGraph;
 use roadmap::engine::repo::TaskRepo;
 use roadmap::engine::resolver::TaskResolver;
-use roadmap::engine::runner::get_git_sha;
 use roadmap::engine::types::{DerivedStatus, TaskStatus};
 
 /// Sets a task as the active focus.
@@ -15,7 +15,7 @@ use roadmap::engine::types::{DerivedStatus, TaskStatus};
 /// Returns error if task is blocked or not found.
 pub fn handle(task_ref: &str, strict: bool) -> Result<()> {
     let conn = Db::connect()?;
-    let head_sha = get_git_sha();
+    let context = RepoContext::new()?;
 
     let resolver = if strict {
         TaskResolver::strict(&conn)
@@ -26,7 +26,7 @@ pub fn handle(task_ref: &str, strict: bool) -> Result<()> {
     let result = resolver.resolve(task_ref)?;
     let task = &result.task;
 
-    check_not_blocked(&conn, task, &head_sha)?;
+    check_not_blocked(&conn, task, &context)?;
 
     let repo = TaskRepo::new(&conn);
     repo.update_status(task.id, TaskStatus::Active)?;
@@ -45,7 +45,7 @@ pub fn handle(task_ref: &str, strict: bool) -> Result<()> {
 fn check_not_blocked(
     conn: &rusqlite::Connection,
     task: &roadmap::engine::types::Task,
-    head_sha: &str,
+    context: &RepoContext,
 ) -> Result<()> {
     let graph = TaskGraph::build(conn)?;
     let blockers = graph.get_blockers(task.id);
@@ -53,7 +53,7 @@ fn check_not_blocked(
     let incomplete: Vec<_> = blockers
         .into_iter()
         .filter(|t| {
-            let status = t.derive_status(head_sha);
+            let status = t.derive_status(context);
             !matches!(status, DerivedStatus::Proven | DerivedStatus::Attested)
         })
         .collect();

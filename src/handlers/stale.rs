@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 use colored::Colorize;
+use roadmap::engine::context::RepoContext;
 use roadmap::engine::db::Db;
 use roadmap::engine::repo::TaskRepo;
-use roadmap::engine::runner::get_git_sha;
 use roadmap::engine::types::DerivedStatus;
 
 /// Scans for and lists all tasks with stale proofs.
@@ -15,12 +15,13 @@ pub fn handle() -> Result<()> {
     let conn = Db::connect()?;
     let repo = TaskRepo::new(&conn);
     let tasks = repo.get_all()?;
-    let head_sha = get_git_sha();
+    let context = RepoContext::new()?;
+    let head_sha = context.head_sha();
     let short_head = &head_sha[..7.min(head_sha.len())];
 
     let stale_tasks: Vec<_> = tasks
         .iter()
-        .filter(|t| matches!(t.derive_status(&head_sha), DerivedStatus::Stale))
+        .filter(|t| matches!(t.derive_status(&context), DerivedStatus::Stale))
         .collect();
 
     if stale_tasks.is_empty() {
@@ -33,8 +34,6 @@ pub fn handle() -> Result<()> {
     println!();
 
     for task in stale_tasks {
-        // Law of Paranoia: Implicit guarantee from derive_status() matches Stale
-        // only if proof exists, but we must handle Option strictly.
         if let Some(proof) = &task.proof {
             let proof_sha = &proof.git_sha[..7.min(proof.git_sha.len())];
 

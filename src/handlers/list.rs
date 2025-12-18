@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 use colored::Colorize;
+use roadmap::engine::context::RepoContext;
 use roadmap::engine::db::Db;
 use roadmap::engine::repo::TaskRepo;
-use roadmap::engine::runner::get_git_sha;
 
 /// Lists all tasks in the repository.
 ///
@@ -14,12 +14,12 @@ pub fn handle() -> Result<()> {
     let conn = Db::connect()?;
     let repo = TaskRepo::new(&conn);
     let tasks = repo.get_all()?;
-    let head_sha = get_git_sha();
+    let context = RepoContext::new()?;
 
     println!("{} All Tasks:", "📋".cyan());
 
     for task in tasks {
-        let derived = task.derive_status(&head_sha);
+        let derived = task.derive_status(&context);
         println!(
             "   [{}] {} ({})",
             task.slug.blue(),

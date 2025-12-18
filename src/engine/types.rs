@@ -1,5 +1,6 @@
 //! Core types for the Roadmap system.
 
+use super::context::RepoContext;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -86,12 +87,13 @@ pub struct Task {
     pub test_cmd: Option<String>,
     pub created_at: String,
     pub proof: Option<Proof>,
+    pub scopes: Vec<String>,
 }
 
 impl Task {
-    /// Computes the derived truth of the task based on proof history and HEAD.
+    /// Computes the derived truth of the task based on proof history and repo context.
     #[must_use]
-    pub fn derive_status(&self, head_sha: &str) -> DerivedStatus {
+    pub fn derive_status(&self, context: &RepoContext) -> DerivedStatus {
         let Some(proof) = &self.proof else {
             return DerivedStatus::Unproven;
         };
@@ -104,7 +106,7 @@ impl Task {
             return DerivedStatus::Broken;
         }
 
-        if !sha_matches(&proof.git_sha, head_sha) {
+        if !sha_matches(&proof.git_sha, context.head_sha()) {
             return DerivedStatus::Stale;
         }
 

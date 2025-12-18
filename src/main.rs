@@ -23,6 +23,9 @@ enum Commands {
         after: Option<String>,
         #[arg(long, short = 't')]
         test: Option<String>,
+        /// File glob patterns to scope this task (e.g., "src/auth/**")
+        #[arg(long, short = 's')]
+        scope: Option<Vec<String>>,
     },
     /// Show next actionable tasks
     Next {
@@ -74,7 +77,7 @@ fn main() -> Result<()> {
         | Commands::List
         | Commands::Status
         | Commands::Why { .. }
-        | Commands::Stale 
+        | Commands::Stale
         | Commands::History { .. } => dispatch_read_ops(cli.command),
     }
 }
@@ -87,11 +90,13 @@ fn dispatch_write_ops(cmd: Commands) -> Result<()> {
             blocks,
             after,
             test,
+            scope,
         } => handlers::add::handle(
             &title,
             blocks.as_deref(),
             after.as_deref(),
             test.as_deref(),
+            scope,
         ),
         Commands::Do { task, strict } => handlers::do_task::handle(&task, strict),
         Commands::Check { force, reason } => handlers::check::handle(force, reason.as_deref()),

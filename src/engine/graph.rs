@@ -1,5 +1,6 @@
 //! Graph Engine: In-memory DAG representation.
 
+use super::context::RepoContext;
 use super::repo::TaskRepo;
 use super::types::{DerivedStatus, Task};
 use anyhow::Result;
@@ -11,14 +12,14 @@ use std::collections::HashMap;
 pub struct TaskGraph {
     graph: DiGraphMap<i64, ()>,
     tasks: HashMap<i64, Task>,
-    head_sha: String,
+    context: RepoContext,
 }
 
 impl TaskGraph {
     /// Builds the dependency graph from the database.
     ///
     /// # Errors
-    /// Returns an error if the database query fails.
+    /// Returns an error if the database query fails or git context cannot be loaded.
     pub fn build(conn: &Connection) -> Result<Self> {
         let mut graph = DiGraphMap::new();
         let repo = TaskRepo::new(conn);
@@ -40,7 +41,7 @@ impl TaskGraph {
         Ok(Self {
             graph,
             tasks: task_map,
-            head_sha: get_git_sha(),
+            context: RepoContext::new()?,
         })
     }
 
@@ -51,7 +52,7 @@ impl TaskGraph {
             .tasks
             .values()
             .filter(|t| {
-                let status = t.derive_status(&self.head_sha);
+                let status = t.derive_status(&self.context);
                 status.is_actionable()
             })
             .filter(|t| !self.is_blocked(t.id))
@@ -69,8 +70,7 @@ impl TaskGraph {
                 let Some(task) = self.tasks.get(&sid) else {
                     return false;
                 };
-                let status = task.derive_status(&self.head_sha);
-                // Explicitly use DerivedStatus to satisfy architectural theme.
+                let status = task.derive_status(&self.context);
                 !matches!(status, DerivedStatus::Proven | DerivedStatus::Attested)
             })
     }
@@ -86,7 +86,7 @@ impl TaskGraph {
     /// Returns the current git HEAD SHA.
     #[must_use]
     pub fn head_sha(&self) -> &str {
-        &self.head_sha
+        self.context.head_sha()
     }
 
     /// Gets tasks blocked by the given ID.
@@ -106,13 +106,4 @@ impl TaskGraph {
             .filter_map(|i| self.tasks.get(&i))
             .collect()
     }
-}
-
-fn get_git_sha() -> String {
-    std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string())
 }

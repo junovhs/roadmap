@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use colored::Colorize;
+use roadmap::engine::context::RepoContext;
 use roadmap::engine::db::Db;
 use roadmap::engine::graph::TaskGraph;
 use roadmap::engine::repo::TaskRepo;
@@ -14,7 +15,8 @@ pub fn handle() -> Result<()> {
     let conn = Db::connect()?;
     let repo = TaskRepo::new(&conn);
     let graph = TaskGraph::build(&conn)?;
-    let head_sha = graph.head_sha();
+    let context = RepoContext::new()?;
+    let head_sha = context.head_sha();
 
     println!("{} Roadmap Status", "📊".cyan());
 
@@ -24,7 +26,7 @@ pub fn handle() -> Result<()> {
                 "   Focus: [{}] {} ({})",
                 task.slug.yellow(),
                 task.title,
-                task.derive_status(head_sha).to_string().dimmed()
+                task.derive_status(&context).to_string().dimmed()
             );
         }
     }
@@ -36,6 +38,8 @@ pub fn handle() -> Result<()> {
             println!("     - [{}] {}", task.slug.dimmed(), task.title);
         }
     }
+
+    println!("\n   Repo HEAD: {}", &head_sha[..7.min(head_sha.len())].dimmed());
 
     Ok(())
 }
