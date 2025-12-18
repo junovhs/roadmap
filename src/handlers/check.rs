@@ -8,6 +8,10 @@ use roadmap::engine::repo::TaskRepo;
 use roadmap::engine::runner::{get_git_sha, VerifyRunner};
 use roadmap::engine::types::{Proof, Task, TaskStatus};
 
+/// Runs verification for the active task.
+///
+/// # Errors
+/// Returns error if no task is active or database fails.
 pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
     let conn = Db::connect()?;
     let repo = TaskRepo::new(&conn);
@@ -17,7 +21,7 @@ pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
     let derived = task.derive_status(&head_sha);
 
     println!(
-        "?? Checking: [{}] {} ({})",
+        "🔍 Checking: [{}] {} ({})",
         task.slug.yellow(),
         task.title,
         derived.to_string().dimmed()
@@ -37,52 +41,39 @@ pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
 }
 
 fn handle_force(
-    repo: &TaskRepo<&rusqlite::Connection>,
+    repo: &TaskRepo<'_>,
     task: &Task,
     reason: Option<&str>,
     git_sha: &str,
 ) -> Result<()> {
     let reason = reason.unwrap_or("Manual attestation");
-
     let proof = Proof::attested(reason, git_sha);
     repo.save_proof(task.id, &proof)?;
     repo.update_status(task.id, TaskStatus::Attested)?;
 
     println!(
         "{} Task [{}] marked ATTESTED (not verified)",
-        "?".yellow(),
+        "!".yellow(),
         task.slug.yellow()
     );
-    println!("   {} \"{}\"", "reason:".dimmed(), reason);
-    println!(
-        "   {} sha={}",
-        "proof:".dimmed(),
-        &git_sha[..7.min(git_sha.len())]
-    );
-
     show_unblocked(repo, task.id)
 }
 
-fn get_active_task(repo: &TaskRepo<&rusqlite::Connection>) -> Result<Task> {
+fn get_active_task(repo: &TaskRepo<'_>) -> Result<Task> {
     let Some(active_id) = repo.get_active_task_id()? else {
         bail!("No active task. Run `roadmap do <task>` first.");
     };
-
-    let Some(task) = repo.find_by_id(active_id)? else {
-        bail!("Active task not found in database.");
-    };
-
-    Ok(task)
+    repo.find_by_id(active_id)?
+        .ok_or_else(|| anyhow::anyhow!("Active task not found"))
 }
 
 fn run_verification(
-    repo: &TaskRepo<&rusqlite::Connection>,
+    repo: &TaskRepo<'_>,
     task: &Task,
     test_cmd: &str,
     head_sha: &str,
 ) -> Result<()> {
     println!("   {} {}", "running:".dimmed(), test_cmd);
-
     let runner = VerifyRunner::default_runner();
     let result = runner.verify(test_cmd)?;
 
@@ -95,7 +86,7 @@ fn run_verification(
 
 #[allow(clippy::cast_possible_truncation)]
 fn mark_proven(
-    repo: &TaskRepo<&rusqlite::Connection>,
+    repo: &TaskRepo<'_>,
     task: &Task,
     cmd: &str,
     result: &roadmap::engine::runner::VerifyResult,
@@ -110,22 +101,15 @@ fn mark_proven(
 
     println!(
         "{} PROVEN! Task [{}] verified",
-        "�".green(),
+        "✓".green(),
         task.slug.green()
     );
-    println!(
-        "   {} sha={} duration={}ms",
-        "proof:".dimmed(),
-        &git_sha[..7.min(git_sha.len())],
-        duration_ms
-    );
-
     show_unblocked(repo, task.id)
 }
 
 #[allow(clippy::cast_possible_truncation)]
 fn mark_broken(
-    repo: &TaskRepo<&rusqlite::Connection>,
+    repo: &TaskRepo<'_>,
     task: &Task,
     cmd: &str,
     result: &roadmap::engine::runner::VerifyResult,
@@ -134,38 +118,35 @@ fn mark_broken(
     let duration_ms = result.duration.as_millis() as u64;
     let exit_code = result.exit_code.unwrap_or(1);
 
-    // Save the failed proof for history
     let proof = Proof::new(cmd, exit_code, git_sha, duration_ms);
     repo.save_proof(task.id, &proof)?;
 
     println!(
         "{} BROKEN! Task [{}] verification failed",
-        "?".red(),
+        "✗".red(),
         task.slug.red()
     );
     Ok(())
 }
 
-fn show_unblocked(repo: &TaskRepo<&rusqlite::Connection>, done_id: i64) -> Result<()> {
+fn show_unblocked(repo: &TaskRepo<'_>, done_id: i64) -> Result<()> {
     let graph = TaskGraph::build(repo.conn())?;
-    let available: Vec<_> = graph
-        .get_frontier()
+    let frontier = graph.get_frontier();
+    
+    // Only show if the current task completion actually opened something new
+    // and exclude the task we just finished if it's still in frontier (e.g. Broken)
+    let available: Vec<_> = frontier
         .into_iter()
         .filter(|t| t.id != done_id)
         .take(3)
         .collect();
 
     if !available.is_empty() {
-        println!("\n?? Now available:");
+        println!("\n✨ Now available:");
         for t in available {
-            let status = t.derive_status(graph.head_sha());
-            println!(
-                "   	 [{}] {} ({})",
-                t.slug.yellow(),
-                t.title,
-                status.to_string().dimmed()
-            );
+            println!("   - [{}] {}", t.slug.yellow(), t.title);
         }
     }
+    
     Ok(())
-}
+}

@@ -1,7 +1,6 @@
 //! Fuzzy Task Resolver: Matches human queries to Task IDs.
 
 use super::fuzzy::calculate_score;
-pub use super::fuzzy::slugify;
 use super::repo::{TaskRepo, TASK_SELECT};
 use super::types::Task;
 use anyhow::{bail, Result};

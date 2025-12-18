@@ -23,7 +23,7 @@ pub fn handle() -> Result<()> {
         counts.total()
     );
     if counts.attested > 0 {
-        println!("   {} {}", "attested:".yellow(), counts.attested);
+        println!("   {} {}", "attested:".blue(), counts.attested);
     }
     if counts.stale > 0 {
         println!("   {} {}", "stale:".yellow(), counts.stale);
@@ -91,6 +91,6 @@ fn status_icon(status: DerivedStatus) -> colored::ColoredString {
         DerivedStatus::Stale => "?".yellow(),
         DerivedStatus::Unproven => "	".dimmed(),
         DerivedStatus::Proven => "�".green(),
-        DerivedStatus::Attested => "?".yellow(),
+        DerivedStatus::Attested => "?".blue(),
     }
 }

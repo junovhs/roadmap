@@ -1,7 +1,6 @@
 //! Fuzzy Task Resolver: Matches human queries to Task IDs.
 
 use super::fuzzy::calculate_score;
-pub use super::fuzzy::slugify;
 use super::repo::{TaskRepo, TASK_SELECT};
 use super::types::Task;
 use anyhow::{bail, Result};
@@ -19,7 +18,6 @@ pub struct TaskResolver<'a> {
 }
 
 impl<'a> TaskResolver<'a> {
-    /// Creates a new resolver.
     #[must_use]
     pub fn new(conn: &'a Connection) -> Self {
         Self {
@@ -29,7 +27,6 @@ impl<'a> TaskResolver<'a> {
         }
     }
 
-    /// Creates a resolver in strict mode.
     #[must_use]
     pub fn strict(conn: &'a Connection) -> Self {
         Self {
@@ -39,10 +36,6 @@ impl<'a> TaskResolver<'a> {
         }
     }
 
-    /// Resolves a user query into a task.
-    ///
-    /// # Errors
-    /// Returns an error if no match is found or the query is ambiguous.
     pub fn resolve(&self, query: &str) -> Result<ResolveResult> {
         if let Ok(id) = query.parse::<i64>() {
             if let Some(task) = self.repo.find_by_id(id)? {
@@ -67,7 +60,7 @@ impl<'a> TaskResolver<'a> {
         }
 
         if self.strict {
-            bail!("No exact match for '{query}' in strict mode.");
+            bail!("No exact match for '{}' in strict mode.", query);
         }
         self.fuzzy_resolve(query)
     }
@@ -90,7 +83,7 @@ impl<'a> TaskResolver<'a> {
         let (_, task) = matches
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow::anyhow!("No task matches '{query}'"))?;
+            .ok_or_else(|| anyhow::anyhow!("No task matches '{}'", query))?;
 
         Ok(ResolveResult {
             task,

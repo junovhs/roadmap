@@ -9,10 +9,6 @@ use roadmap::engine::resolver::TaskResolver;
 use roadmap::engine::runner::get_git_sha;
 use roadmap::engine::types::{DerivedStatus, TaskStatus};
 
-/// Sets a task as the active focus.
-///
-/// # Errors
-/// Returns error if task is blocked or not found.
 pub fn handle(task_ref: &str, strict: bool) -> Result<()> {
     let conn = Db::connect()?;
     let head_sha = get_git_sha();
@@ -32,26 +28,28 @@ pub fn handle(task_ref: &str, strict: bool) -> Result<()> {
     repo.update_status(task.id, TaskStatus::Active)?;
     repo.set_active_task(task.id)?;
 
+    let derived = task.derive_status(&head_sha);
     println!(
-        "{} Now working on: [{}] {}",
+        "{} Now working on: [{}] {} ({})",
         "→".yellow(),
         task.slug.yellow(),
-        task.title
+        task.title,
+        derived.to_string().dimmed()
     );
+
+    if let Some(ref cmd) = task.test_cmd {
+        println!("   {} {}", "verify:".dimmed(), cmd.dimmed());
+    }
 
     Ok(())
 }
 
-fn check_not_blocked(
-    conn: &rusqlite::Connection,
-    task: &roadmap::engine::types::Task,
-    head_sha: &str,
-) -> Result<()> {
+fn check_not_blocked(conn: &rusqlite::Connection, task: &roadmap::engine::types::Task, head_sha: &str) -> Result<()> {
     let graph = TaskGraph::build(conn)?;
     let blockers = graph.get_blockers(task.id);
 
     let incomplete: Vec<_> = blockers
-        .into_iter()
+        .iter()
         .filter(|t| {
             let status = t.derive_status(head_sha);
             !matches!(status, DerivedStatus::Proven | DerivedStatus::Attested)
@@ -59,8 +57,16 @@ fn check_not_blocked(
         .collect();
 
     if !incomplete.is_empty() {
-        let names: Vec<_> = incomplete.iter().map(|t| t.slug.as_str()).collect();
-        bail!("Task [{}] is blocked by: {}", task.slug, names.join(", "));
+        let names: Vec<_> = incomplete
+            .iter()
+            .map(|t| format!("{} ({})", t.slug, t.derive_status(head_sha)))
+            .collect();
+        bail!(
+            "Task [{}] is blocked by: {}",
+            task.slug,
+            names.join(", ")
+        );
     }
+
     Ok(())
 }

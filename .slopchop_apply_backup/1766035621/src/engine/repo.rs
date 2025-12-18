@@ -17,12 +17,6 @@ impl<'a> TaskRepo<'a> {
         Self { conn }
     }
 
-    /// Returns the underlying database connection.
-    #[must_use]
-    pub fn conn(&self) -> &Connection {
-        self.conn
-    }
-
     /// Adds a new task to the database.
     ///
     /// # Errors

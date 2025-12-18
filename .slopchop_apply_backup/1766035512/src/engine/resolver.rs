@@ -1,7 +1,6 @@
 //! Fuzzy Task Resolver: Matches human queries to Task IDs.
 
 use super::fuzzy::calculate_score;
-pub use super::fuzzy::slugify;
 use super::repo::{TaskRepo, TASK_SELECT};
 use super::types::Task;
 use anyhow::{bail, Result};
@@ -67,7 +66,7 @@ impl<'a> TaskResolver<'a> {
         }
 
         if self.strict {
-            bail!("No exact match for '{query}' in strict mode.");
+            bail!("No exact match for '{}' in strict mode.", query);
         }
         self.fuzzy_resolve(query)
     }
@@ -90,7 +89,7 @@ impl<'a> TaskResolver<'a> {
         let (_, task) = matches
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow::anyhow!("No task matches '{query}'"))?;
+            .ok_or_else(|| anyhow::anyhow!("No task matches '{}'", query))?;
 
         Ok(ResolveResult {
             task,

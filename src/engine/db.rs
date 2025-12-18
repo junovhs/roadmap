@@ -14,7 +14,8 @@ impl Db {
     /// Initializes the .roadmap directory and `SQLite` database schema.
     ///
     /// # Errors
-    /// Returns error if directory creation, DB opening, or migration fails.
+    /// Returns an error if the directory cannot be created or the database
+    /// initialization fails.
     pub fn init() -> Result<()> {
         if !Path::new(DB_DIR).exists() {
             fs::create_dir(DB_DIR).context("Failed to create .roadmap directory")?;
@@ -32,7 +33,7 @@ impl Db {
     /// Connects to an existing database.
     ///
     /// # Errors
-    /// Returns error if the database file does not exist or cannot be opened.
+    /// Returns an error if the database file does not exist or cannot be opened.
     pub fn connect() -> Result<Connection> {
         let db_path = Path::new(DB_DIR).join(DB_FILE);
         if !db_path.exists() {
@@ -45,13 +46,15 @@ impl Db {
 
     /// Configures `SQLite` connection for integrity and concurrency.
     fn configure(conn: &Connection) -> Result<()> {
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
-        conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA journal_mode = WAL;
+             PRAGMA busy_timeout = 5000;",
+        )?;
         Ok(())
     }
 
-    /// Applies the schema migrations.
+    /// Applies schema migrations.
     fn migrate(conn: &Connection) -> Result<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tasks (
@@ -60,21 +63,25 @@ impl Db {
                 title TEXT NOT NULL,
                 status TEXT NOT NULL,
                 test_cmd TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                context_files TEXT,
-                proof_json TEXT
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
             [],
-        )
-        .context("Failed to create tasks table")?;
+        )?;
 
-        // Migration: add proof_json if missing (for existing DBs)
-        let has_proof: bool = conn
-            .prepare("SELECT proof_json FROM tasks LIMIT 1")
-            .is_ok();
-        if !has_proof {
-            let _ = conn.execute("ALTER TABLE tasks ADD COLUMN proof_json TEXT", []);
-        }
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS proofs (
+                id INTEGER PRIMARY KEY,
+                task_id INTEGER NOT NULL,
+                cmd TEXT NOT NULL,
+                exit_code INTEGER NOT NULL,
+                git_sha TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                attested_reason TEXT,
+                FOREIGN KEY(task_id) REFERENCES tasks(id)
+            )",
+            [],
+        )?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS dependencies (
@@ -85,8 +92,7 @@ impl Db {
                 FOREIGN KEY(blocked_id) REFERENCES tasks(id)
             )",
             [],
-        )
-        .context("Failed to create dependencies table")?;
+        )?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS state (
@@ -94,9 +100,8 @@ impl Db {
                 value TEXT
             )",
             [],
-        )
-        .context("Failed to create state table")?;
+        )?;
 
         Ok(())
     }
-}
+}

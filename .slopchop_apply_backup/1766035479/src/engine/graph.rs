@@ -70,7 +70,7 @@ impl TaskGraph {
                     return false;
                 };
                 let status = task.derive_status(&self.head_sha);
-                // Explicitly use DerivedStatus to satisfy architectural theme.
+                // Explicitly use DerivedStatus to satisfy architectural theme and import
                 !matches!(status, DerivedStatus::Proven | DerivedStatus::Attested)
             })
     }
@@ -114,5 +114,6 @@ fn get_git_sha() -> String {
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
