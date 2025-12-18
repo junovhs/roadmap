@@ -30,7 +30,7 @@ impl Db {
         Ok(())
     }
 
-    /// Connects to an existing database.
+    /// Connects to an existing database and ensures schema is up-to-date.
     ///
     /// # Errors
     /// Returns an error if the database file does not exist or cannot be opened.
@@ -40,7 +40,11 @@ impl Db {
             anyhow::bail!("Roadmap not initialized. Run `roadmap init` first.");
         }
         let conn = Connection::open(db_path).context("Failed to open database")?;
+        
         Self::configure(&conn)?;
+        // Ensure migrations run on every connection to handle schema updates (e.g. v0.3.0 scopes)
+        Self::migrate(&conn)?;
+        
         Ok(conn)
     }
 

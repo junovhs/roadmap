@@ -106,8 +106,22 @@ impl Task {
             return DerivedStatus::Broken;
         }
 
-        if !sha_matches(&proof.git_sha, context.head_sha()) {
-            return DerivedStatus::Stale;
+        // SHA Matching Logic (The Core of Smart Decay)
+        let sha_match = sha_matches(&proof.git_sha, context.head_sha());
+        
+        if !sha_match {
+            // If Global SHA changed, we check if it matters for this task.
+            if self.scopes.is_empty() {
+                // No scope defined -> Global Decay (Safe Default)
+                return DerivedStatus::Stale;
+            }
+
+            if context.has_changes(&proof.git_sha, &self.scopes) {
+                // Scoped files changed -> Stale
+                return DerivedStatus::Stale;
+            }
+            
+            // HEAD moved, but scoped files are untouched -> Still Proven!
         }
 
         DerivedStatus::Proven
