@@ -46,18 +46,6 @@ pub enum DerivedStatus {
 }
 
 impl DerivedStatus {
-    /// Returns the UI color name associated with this status.
-    #[must_use]
-    pub fn color_hint(&self) -> &'static str {
-        match self {
-            Self::Proven => "green",
-            Self::Stale => "yellow",
-            Self::Broken => "red",
-            Self::Unproven => "dimmed",
-            Self::Attested => "blue",
-        }
-    }
-
     /// Returns true if the task requires attention.
     #[must_use]
     pub fn is_actionable(&self) -> bool {

@@ -53,8 +53,6 @@ enum Commands {
     Why {
         task: String,
     },
-    /// Scan for invalidated (stale) proofs
-    Stale,
 }
 
 fn main() -> Result<()> {
@@ -64,11 +62,9 @@ fn main() -> Result<()> {
         Commands::Init | Commands::Add { .. } | Commands::Do { .. } | Commands::Check { .. } => {
             dispatch_write_ops(cli.command)
         }
-        Commands::Next { .. }
-        | Commands::List
-        | Commands::Status
-        | Commands::Why { .. }
-        | Commands::Stale => dispatch_read_ops(cli.command),
+        Commands::Next { .. } | Commands::List | Commands::Status | Commands::Why { .. } => {
+            dispatch_read_ops(cli.command)
+        }
     }
 }
 
@@ -98,7 +94,6 @@ fn dispatch_read_ops(cmd: Commands) -> Result<()> {
         Commands::List => handlers::list::handle(),
         Commands::Status => handlers::status::handle(),
         Commands::Why { task } => handlers::why::handle(&task),
-        Commands::Stale => handlers::stale::handle(),
         _ => unreachable!("Invalid read command dispatch"),
     }
 }

@@ -2,6 +2,8 @@ mod handlers;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use colored::Colorize;
+use roadmap::engine::db::Db;
 
 #[derive(Parser)]
 #[command(name = "roadmap", version, about = "Git for your Intent")]
@@ -10,7 +12,7 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Subcommand, Clone)]
+#[derive(Subcommand)]
 enum Commands {
     /// Initialize the roadmap repository
     Init,
@@ -53,52 +55,25 @@ enum Commands {
     Why {
         task: String,
     },
-    /// Scan for invalidated (stale) proofs
-    Stale,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    match cli.command {
-        Commands::Init | Commands::Add { .. } | Commands::Do { .. } | Commands::Check { .. } => {
-            dispatch_write_ops(cli.command)
+    match &cli.command {
+        Commands::Init => {
+            Db::init()?;
+            println!("{} Initialized .roadmap/state.db", "✓".green());
+            Ok(())
         }
-        Commands::Next { .. }
-        | Commands::List
-        | Commands::Status
-        | Commands::Why { .. }
-        | Commands::Stale => dispatch_read_ops(cli.command),
-    }
-}
-
-fn dispatch_write_ops(cmd: Commands) -> Result<()> {
-    match cmd {
-        Commands::Init => handlers::init::handle(),
-        Commands::Add {
-            title,
-            blocks,
-            after,
-            test,
-        } => handlers::add::handle(
-            &title,
-            blocks.as_deref(),
-            after.as_deref(),
-            test.as_deref(),
-        ),
-        Commands::Do { task, strict } => handlers::do_task::handle(&task, strict),
-        Commands::Check { force, reason } => handlers::check::handle(force, reason.as_deref()),
-        _ => unreachable!("Invalid write command dispatch"),
-    }
-}
-
-fn dispatch_read_ops(cmd: Commands) -> Result<()> {
-    match cmd {
-        Commands::Next { json } => handlers::next::handle(json),
+        Commands::Add { title, blocks, after, test } => {
+            handlers::add::handle(title, blocks.as_deref(), after.as_deref(), test.as_deref())
+        }
+        Commands::Next { json } => handlers::next::handle(*json),
         Commands::List => handlers::list::handle(),
+        Commands::Do { task, strict } => handlers::do_task::handle(task, *strict),
+        Commands::Check { force, reason } => handlers::check::handle(*force, reason.as_deref()),
         Commands::Status => handlers::status::handle(),
-        Commands::Why { task } => handlers::why::handle(&task),
-        Commands::Stale => handlers::stale::handle(),
-        _ => unreachable!("Invalid read command dispatch"),
+        Commands::Why { task } => handlers::why::handle(task),
     }
 }

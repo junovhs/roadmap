@@ -129,6 +129,33 @@ impl<'a> TaskRepo<'a> {
             .optional()
     }
 
+    /// Retrieves the full history of proofs for a task.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn get_proof_history(&self, task_id: i64) -> Result<Vec<Proof>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT cmd, exit_code, git_sha, duration_ms, timestamp, attested_reason 
+             FROM proofs WHERE task_id = ?1 ORDER BY timestamp DESC",
+        )?;
+        let rows = stmt.query_map(params![task_id], |row| {
+            Ok(Proof {
+                cmd: row.get(0)?,
+                exit_code: row.get(1)?,
+                git_sha: row.get(2)?,
+                duration_ms: row.get(3)?,
+                timestamp: row.get(4)?,
+                attested_reason: row.get(5)?,
+            })
+        })?;
+
+        let mut proofs = Vec::new();
+        for p in rows {
+            proofs.push(p?);
+        }
+        Ok(proofs)
+    }
+
     /// Sets the active task in global state.
     ///
     /// # Errors
