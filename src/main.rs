@@ -61,14 +61,24 @@ enum Commands {
     /// Explain the status of a specific task
     Why {
         task: String,
+        #[arg(long)]
+        json: bool,
+        /// Strict mode: require exact ID or slug (no fuzzy matching)
+        #[arg(long)]
+        strict: bool,
     },
     /// Scan for invalidated (stale) proofs
-    Stale,
+    Stale {
+        #[arg(long)]
+        json: bool,
+    },
     /// Show chronological verification history
     History {
         /// Number of entries to show
         #[arg(long, default_value = "20")]
         limit: usize,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -83,7 +93,7 @@ fn main() -> Result<()> {
         | Commands::List { .. }
         | Commands::Status { .. }
         | Commands::Why { .. }
-        | Commands::Stale
+        | Commands::Stale { .. }
         | Commands::History { .. } => dispatch_read_ops(cli.command),
     }
 }
@@ -115,9 +125,9 @@ fn dispatch_read_ops(cmd: Commands) -> Result<()> {
         Commands::Next { json } => handlers::next::handle(json),
         Commands::List { json } => handlers::list::handle(json),
         Commands::Status { json } => handlers::status::handle(json),
-        Commands::Why { task } => handlers::why::handle(&task),
-        Commands::Stale => handlers::stale::handle(),
-        Commands::History { limit } => handlers::history::handle(limit),
+        Commands::Why { task, json, strict } => handlers::why::handle(&task, json, strict),
+        Commands::Stale { json } => handlers::stale::handle(json),
+        Commands::History { limit, json } => handlers::history::handle(limit, json),
         _ => unreachable!("Invalid read command dispatch"),
     }
 }

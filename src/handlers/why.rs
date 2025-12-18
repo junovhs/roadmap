@@ -6,25 +6,65 @@ use roadmap::engine::context::RepoContext;
 use roadmap::engine::db::Db;
 use roadmap::engine::repo::ProofRepo;
 use roadmap::engine::resolver::TaskResolver;
-use roadmap::engine::types::{DerivedStatus, Proof};
+use roadmap::engine::types::{DerivedStatus, Proof, Task};
+use serde::Serialize;
 
 /// Explains the status of a task and shows its audit log.
 ///
 /// # Errors
 /// Returns error if task resolution or DB query fails.
-pub fn handle(task_ref: &str) -> Result<()> {
+pub fn handle(task_ref: &str, json: bool, strict: bool) -> Result<()> {
     let conn = Db::connect()?;
     let proof_repo = ProofRepo::new(&conn);
     let context = RepoContext::new()?;
     let head_sha = context.head_sha();
 
-    let resolver = TaskResolver::new(&conn);
+    let resolver = if strict {
+        TaskResolver::strict(&conn)
+    } else {
+        TaskResolver::new(&conn)
+    };
+
     let result = resolver.resolve(task_ref)?;
     let task = result.task;
 
     let derived = task.derive_status(&context);
     let history = proof_repo.get_history(task.id)?;
 
+    if json {
+        return print_json(&task, derived, &history, head_sha);
+    }
+
+    print_human(&task, derived, &history, head_sha);
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct WhyReport {
+    task_id: i64,
+    slug: String,
+    title: String,
+    status: String,
+    head_sha: String,
+    proof: Option<Proof>,
+    history: Vec<Proof>,
+}
+
+fn print_json(task: &Task, status: DerivedStatus, history: &[Proof], head_sha: &str) -> Result<()> {
+    let report = WhyReport {
+        task_id: task.id,
+        slug: task.slug.clone(),
+        title: task.title.clone(),
+        status: format!("{status:?}"),
+        head_sha: head_sha.to_string(),
+        proof: task.proof.clone(),
+        history: history.to_vec(),
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn print_human(task: &Task, derived: DerivedStatus, history: &[Proof], head_sha: &str) {
     println!(
         "{} [{}] {}",
         status_icon(derived),
@@ -37,9 +77,7 @@ pub fn handle(task_ref: &str) -> Result<()> {
 
     print_explanation(derived, task.proof.as_ref(), head_sha);
     println!();
-    print_history(&history);
-
-    Ok(())
+    print_history(history);
 }
 
 fn status_icon(status: DerivedStatus) -> colored::ColoredString {
