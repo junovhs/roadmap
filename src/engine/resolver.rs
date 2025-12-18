@@ -1,11 +1,10 @@
 //! Fuzzy Task Resolver: Matches human queries to Task IDs.
 
-use super::fuzzy::calculate_score;
-pub use super::fuzzy::slugify;
 use super::repo::{TaskRepo, TASK_SELECT};
 use super::types::Task;
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashSet;
 
 pub struct ResolveResult {
     pub task: Task,
@@ -97,4 +96,70 @@ impl<'a> TaskResolver<'a> {
             confidence: 1.0,
         })
     }
+}
+
+/// Generates a slug from a title string.
+#[must_use]
+pub fn slugify(title: &str) -> String {
+    title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<&str>>()
+        .join("-")
+}
+
+/// Calculates a match score between a task and a query.
+fn calculate_score(task: &Task, query: &str, query_words: &[&str]) -> f64 {
+    let slug_lower = task.slug.to_lowercase();
+    let title_lower = task.title.to_lowercase();
+
+    let mut score = 0.0;
+
+    if slug_lower.contains(query) {
+        score += 0.8;
+    }
+    if title_lower.contains(query) {
+        score += 0.7;
+    }
+
+    for word in query_words {
+        if slug_lower.contains(word) {
+            score += 0.3;
+        }
+        if title_lower.contains(word) {
+            score += 0.25;
+        }
+    }
+
+    if slug_lower.starts_with(query) {
+        score += 0.5;
+    }
+
+    let slug_sim = string_similarity(&slug_lower, query);
+    score += slug_sim * 0.4;
+
+    score.min(1.0)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn string_similarity(a: &str, b: &str) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+
+    let a_chars: HashSet<char> = a.chars().collect();
+    let b_chars: HashSet<char> = b.chars().collect();
+
+    let intersection = a_chars.intersection(&b_chars).count();
+    let union = a_chars.union(&b_chars).count();
+
+    if union == 0 {
+        return 0.0;
+    }
+
+    intersection as f64 / union as f64
 }

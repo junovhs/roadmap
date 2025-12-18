@@ -29,6 +29,7 @@ roadmap next
 roadmap do "Setup Database"
 
 # Run verification (the truth oracle)
+# NOTE: Repository must be clean (committed) to verify!
 roadmap check
 ```
 
@@ -45,17 +46,24 @@ Most project management tools answer: *"What should we do next?"*
 | Tool | Model | "Done" means... |
 |------|-------|-----------------|
 | JIRA, Trello, TODO.md | Logger | "Someone said so" |
-| **Roadmap** | State Machine | "The verifier passed" |
+| **Roadmap** | State Machine | "The verifier passed on this Commit" |
 
-### Derived Truth & Smart Decay
-
+### 1. Derived Truth
 Roadmap does not trust your memory. It trusts the **Proof Audit Log**.
+- **PROVEN:** The verification passed on the *current* Git commit.
+- **STALE:** The verification passed previously, but the code has changed since then.
+- **BROKEN:** The verification command failed.
 
-1.  **PROVEN:** The verification command passed on the *current* Git commit.
-2.  **STALE:** The verification passed previously, but the code has changed since then.
-    *   **Global Decay:** By default, *any* commit invalidates proofs.
-    *   **Smart Decay:** If you define a `--scope`, the proof stays valid unless the changes touch matched files.
-3.  **BROKEN:** The verification command failed.
+### 2. Smart Decay (Contextual Intelligence)
+Codebases change. Roadmap knows exactly *what* changed.
+- **Global Decay:** If a task has no scope, *any* commit marks it STALE. (Safe default).
+- **Smart Decay:** If a task has a `--scope` (e.g., `src/auth/**`), it stays PROVEN unless the changes touch those files.
+
+### 3. The Law of Hygiene (Strict Mode)
+Truth is a property of a Commit, not a Worktree.
+- Roadmap **refuses** to run `check` if your repository is dirty.
+- You cannot "fake" a proof on uncommitted code.
+- **Commit first, then Verify.**
 
 ---
 
@@ -89,7 +97,12 @@ Roadmap does not trust your memory. It trusts the **Proof Audit Log**.
 ### v0.3.0 ✅ - Contextual Intelligence
 - **Smart Decay**: Scoped invalidation using `git diff`
 - **RepoContext**: Context-aware status derivation
-- **`--scope`**: File pattern matching for tasks
+- **Strict Mode**: Enforced hygiene (no dirty checks)
+
+### v0.4.0 🚧 - The Agent Protocol
+- [ ] JSON-RPC interface for Agents
+- [ ] Structured "Reasoning" for attestations
+- [ ] Remote Sync (Git-backed DB)
 
 ---
 

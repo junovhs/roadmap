@@ -8,8 +8,6 @@
 
 ### The Differentiator
 
-Note: I am very inspired by Beads. But, I have my own ideas, despite my respect for the Beads team. 
-
 | Tool | Question it Answers |
 |------|---------------------|
 | Beads | "What should we do next, and how do we remember it?" |
@@ -21,57 +19,34 @@ Note: I am very inspired by Beads. But, I have my own ideas, despite my respect 
 
 1. A verifier exists (`prove_cmd`)
 2. The verifier passed (exit code 0)
-3. The proof is still valid (repo state hasn't invalidated it)
-
-### The Claim Model
-
-Everything in Roadmap is a **Claim** - a statement about the project that can be proven.
-
-```
-Claim {
-    statement: "POST /login rejects invalid credentials"
-    prove_cmd: "cargo test auth::test_login_rejection"
-    scope: ["src/auth/**"]  // what changes invalidate this
-    depends_on: [other_claim_ids]
-}
-```
-
-**Derived States:**
-- `UNPROVEN` - no proof exists
-- `PROVEN` - proof passed, still valid for current HEAD
-- `STALE` - proof passed, but scoped files changed since
-- `BROKEN` - proof ran and failed
+3. The proof is still valid for the current `HEAD` (Smart Decay)
 
 ---
 
 ## 2. Version Milestones
 
-### v0.1.0 ? (Current)
-MVP scaffold. CLI works, DAG enforced, verification gates completion.
+### v0.1.0 ✅ - MVP
+Scaffold, CLI, DAG enforcement.
 
-### v0.1.1 - "Ship-Worthy"
-Earn the "trustworthy" promise with minimal additions:
+### v0.1.1 ✅ - Ship-Worthy
+Transactions, WAL mode, Fuzzy resolution.
 
-- [ ] **Proof evidence capture**: Store `{cmd, exit_code, sha, timestamp}` on check
-- [ ] **DB hardening**: `foreign_keys=ON`, WAL mode, busy_timeout
-- [ ] **Transactions**: Wrap add + deps + cycle check atomically
-- [ ] **Fuzzy strict mode**: `--json` returns error + candidates, never guesses
-- [ ] **Rename**: `get_critical_path()`  `get_frontier()`
+### v0.2.0 ✅ - Derived Truth
+- [x] **Audit Log**: Append-only proof history (`proofs` table)
+- [x] **Truth Decay**: SHA-based staleness checks
+- [x] **Visibility**: `why`, `stale`, and `history` commands
 
-### v0.2.0 - "Derived Truth"
-Status becomes computed, not stored:
+### v0.3.0 ✅ - Contextual Intelligence
+- [x] **Smart Decay**: Scoped invalidation using `git diff`
+- [x] **RepoContext**: Efficient git operations
+- [x] **Strict Mode**: `check` fails on dirty repo
 
-- [ ] **Computed status**: UNPROVEN/PROVEN/STALE/BROKEN from proof + HEAD
-- [ ] **Scope field**: Define what files invalidate a proof
-- [ ] **`roadmap stale`**: Scan for invalidated proofs
-- [ ] **Rename internally**: Task  Claim, test_cmd  prove_cmd
+### v0.4.0 - "The Agent Protocol"
+Making Roadmap the standard interface for AI coding agents.
 
-### v0.3.0 - "Attestation & Audit"
-Handle manual overrides without destroying trust:
-
-- [ ] **ATTESTED state**: `--force` creates ATTESTED (not PROVEN) with reason
-- [ ] **Audit log**: Append-only proof history
-- [ ] **`roadmap why <claim>`**: Show proof chain
+- [ ] **Structured Output**: Full JSON schema for all read commands
+- [ ] **Agent Handshake**: Protocol for agents to "sign" their work
+- [ ] **Remote Sync**: Database replication via Git LFS or similar
 
 ---
 
@@ -85,7 +60,7 @@ Handle manual overrides without destroying trust:
 ### Integrity
 - SQLite strict transactions
 - Cycle rejection at insertion time
-- No `unwrap()` - all errors handled
+- **Law of Hygiene**: No proofs on dirty repos
 
 ### SlopChop Compliance
 - Max file tokens: 2000
@@ -96,15 +71,10 @@ Handle manual overrides without destroying trust:
 
 ## 4. Sign-off Criteria
 
-### v0.1.1 ships when:
-1. `roadmap check` persists proof evidence
-2. DB uses transactions + WAL
-3. Fuzzy resolver hard-fails on ambiguity in `--json` mode
-
-### v0.2.0 ships when:
-1. `roadmap next` only shows UNPROVEN/STALE claims
-2. Changing a file in scope auto-marks claims STALE
-3. `DONE` no longer exists as stored state
+### v0.3.0 ships when:
+1. `roadmap check` fails on uncommitted changes.
+2. Changing a scoped file marks the task STALE.
+3. Changing an unscoped file does NOT mark scoped tasks STALE.
 
 ---
 
