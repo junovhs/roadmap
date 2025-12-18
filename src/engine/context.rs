@@ -8,6 +8,7 @@ use std::process::Command;
 /// Handles caching `git diff` operations to determine scoped staleness efficiently.
 pub struct RepoContext {
     pub head_sha: String,
+    pub is_dirty: bool,
 }
 
 impl RepoContext {
@@ -17,7 +18,8 @@ impl RepoContext {
     /// Returns error if git execution fails.
     pub fn new() -> Result<Self> {
         let head_sha = get_git_sha();
-        Ok(Self { head_sha })
+        let is_dirty = check_if_dirty();
+        Ok(Self { head_sha, is_dirty })
     }
 
     /// Returns the current HEAD SHA.
@@ -69,4 +71,18 @@ fn get_git_sha() -> String {
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map_or_else(|| "unknown".to_string(), |s| s.trim().to_string())
+}
+
+fn check_if_dirty() -> bool {
+    // git status --porcelain
+    // Prints nothing if clean. Prints lines if dirty.
+    // If git command fails, we default to true (safe side).
+    match Command::new("git")
+        .arg("status")
+        .arg("--porcelain")
+        .output()
+    {
+        Ok(o) => !o.stdout.is_empty(),
+        Err(_) => true,
+    }
 }

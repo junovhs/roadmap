@@ -14,9 +14,21 @@ use roadmap::engine::types::{Proof, Task, TaskStatus};
 /// # Errors
 /// Returns error if no task is active or database fails.
 pub fn handle(force: bool, reason: Option<&str>) -> Result<()> {
+    let context = RepoContext::new()?;
+
+    // LAW OF HYGIENE: The Dirty Lie
+    // You cannot prove something is true about a commit if you have uncommitted changes.
+    // The proof would be recorded against HEAD, but the code verified was HEAD + Dirty.
+    // If you revert the dirty changes, the proof becomes a lie.
+    if context.is_dirty {
+        bail!(
+            "Repository is dirty. You must commit your changes before verifying.\n   {}", 
+            "Roadmap enforces strict hygiene: Truth is a property of a Commit, not a Worktree.".yellow()
+        );
+    }
+
     let conn = Db::connect()?;
     let repo = TaskRepo::new(&conn);
-    let context = RepoContext::new()?;
 
     let task = get_active_task(&repo)?;
     let derived = task.derive_status(&context);

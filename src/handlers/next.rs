@@ -27,8 +27,10 @@ pub fn handle(json: bool) -> Result<()> {
 fn print_json(tasks: &[&Task], head_sha: &str) -> Result<()> {
     // Reconstruct context from the provided SHA to derive status for JSON output.
     // This allows agents to see if a task is Unproven vs Stale.
+    // 'is_dirty' is set to false as 'next' is read-only and doesn't enforce hygiene.
     let context = RepoContext {
         head_sha: head_sha.to_string(),
+        is_dirty: false,
     };
 
     let output: Vec<_> = tasks
@@ -60,6 +62,7 @@ fn print_human(tasks: &[&Task], graph: &TaskGraph) {
     // Ideally TaskGraph would expose its context, but constructing one here is low cost.
     let context = RepoContext {
         head_sha: graph.head_sha().to_string(),
+        is_dirty: false,
     };
 
     for task in tasks {
